@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #ifndef PET_C
 #define PET_C
 
@@ -30,13 +33,15 @@ extern void free_pet_model(pet_model *model) {
 // ######################    RUN    ########    RUN    ########    RUN    ########    RUN    #################################
 extern int run_pet(pet_model* model)
 {
+  if (model == NULL) return -1;
   if (model->bmi.verbose >2){
     printf("Running the PET model \n");
     printf("model->bmi.is_forcing_from_bmi %d \n", model->bmi.is_forcing_from_bmi);
   }
+  if (model->pet_method < 1 || model->pet_method > 5) return -1;
   if (model->pet_params.zero_plane_displacement_height_m <= 0.0){
     fprintf(stderr, "ERROR: zero_plane_displacement_height_m must be > 0.0 m. Current value: %lf\n", model->pet_params.zero_plane_displacement_height_m);
-    exit(EXIT_FAILURE);
+    return -1;
   }
   // populate the evapotranspiration forcing data structure:
   //---------------------------------------------------------------------------------------------------------------
@@ -49,7 +54,10 @@ extern int run_pet(pet_model* model)
   if (model->bmi.is_forcing_from_bmi == 0){
     model->pet_forcing.air_temperature_C = model->forcing_data_air_temperature_2m_K[model->bmi.current_step] - TK;//convert to C
     model->pet_forcing.relative_humidity_percent     = (double)-99.9; // this negative number means use specific humidity
-    model->pet_forcing.specific_humidity_2m_kg_per_kg = model->forcing_data_precip_kg_per_m2[model->bmi.current_step];
+    /* FLO 10/26: The forcing-file path previously used precipitation as
+     * specific humidity. Read the SPFH field instead (kg/kg).
+     */
+    model->pet_forcing.specific_humidity_2m_kg_per_kg = model->forcing_data_specific_humidity_2m_kg_per_kg[model->bmi.current_step];
     model->pet_forcing.air_pressure_Pa    = model->forcing_data_surface_pressure_Pa[model->bmi.current_step];
     model->pet_forcing.wind_speed_m_per_s = hypot(model->forcing_data_u_wind_speed_10m_m_per_s[model->bmi.current_step],
                                            model->forcing_data_v_wind_speed_10m_m_per_s[model->bmi.current_step]);                 
@@ -70,7 +78,7 @@ extern int run_pet(pet_model* model)
     if(model->pet_params.humidity_measurement_height_m !=2.0)
     {
         fprintf(stderr, "ERROR: humidity measurement height is not 2.0 m. Humidity adjustment not yet implemented. Current value: %lf\n", model->pet_params.humidity_measurement_height_m);
-        exit(EXIT_FAILURE);
+        return -1;
     }
     /* jmframe: If we are getting forcing through BMI, then we don't need this, the forcings should already be in place */
     if (model->bmi.is_forcing_from_bmi == 0){
@@ -103,7 +111,11 @@ extern int run_pet(pet_model* model)
     // Use observed wind speed as 2m value (already warned above)
     // wind_speed_measurement_height_m <= zero_plane_displacement_height_m. Using observed wind speed as 2m value.\n");
   
-    model->pet_params.wind_speed_measurement_height_m=2.0;  // change because we converted from 10m to 2m height.
+    /* FLO 10/26: The original code overwrote the configured measurement
+     * height with 2 m after the first update. That prevented the next
+     * forcing record from receiving its 10 m to 2 m adjustment. Retain
+     * the measurement height and use 2 m only in downstream formulas.
+     */
     // transfer aorc forcing data into our data structure for surface radiation calculations
     model->surf_rad_forcing.incoming_shortwave_radiation_W_per_sq_m = (double)model->aorc.incoming_shortwave_W_per_m2;
     model->surf_rad_forcing.incoming_longwave_radiation_W_per_sq_m  = (double)model->aorc.incoming_longwave_W_per_m2; 

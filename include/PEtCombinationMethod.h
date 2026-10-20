@@ -54,7 +54,9 @@ double pevapotranspiration_combination_method(pet_model *model)
     mass_flux = 0.622*von_karman_constant_squared*moist_air_density_kg_per_m3*      // kg per sq. meter per sec.
                 vapor_pressure_deficit_Pa*model->pet_forcing.wind_speed_m_per_s/
                 (model->pet_forcing.air_pressure_Pa*
-                pow(log(model->pet_params.wind_speed_measurement_height_m/model->pet_params.zero_plane_displacement_height_m),2.0));
+                /* FLO 10/26: the wind passed here is at 2 m; using the
+                 * original measurement height would mismatch speed and height. */
+                pow(log(2.0/model->pet_params.zero_plane_displacement_height_m),2.0));
 
     aerodynamic_method_pevapotranspiration_rate_m_per_s=mass_flux/liquid_water_density_kg_per_m3;
   }

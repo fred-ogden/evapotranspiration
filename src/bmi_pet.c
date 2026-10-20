@@ -1,6 +1,15 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <math.h>
+#include <string.h>
+#include <float.h>
+#include <limits.h>
+#include <ctype.h>
+#include <errno.h>
 #include "../include/pet.h"
 #include "../include/bmi.h"
 #include "../include/bmi_pet.h"
@@ -45,7 +54,7 @@ Initialize (Bmi *self, const char *cfg_file)
             printf("Configured forcing file '%s' could not be opened for reading\n", pet->forcing_file);
             return BMI_FAILURE;
         }
-        if (forcing_line_count == 1) {
+        if (forcing_line_count <= 1 || pet->bmi.num_timesteps > forcing_line_count - 1) {
             printf("Invalid header-only forcing file '%s'\n", pet->forcing_file);
             return BMI_FAILURE;
         }
@@ -62,6 +71,13 @@ Initialize (Bmi *self, const char *cfg_file)
         pet->forcing_data_v_wind_speed_10m_m_per_s = malloc(sizeof(double) * (pet->bmi.num_timesteps + 1));
     
         // Now open it again to read the forcings
+        if (!pet->forcing_data_precip_kg_per_m2 || !pet->forcing_data_surface_pressure_Pa ||
+            !pet->forcing_data_time || !pet->forcing_data_incoming_shortwave_W_per_m2 ||
+            !pet->forcing_data_incoming_longwave_W_per_m2 ||
+            !pet->forcing_data_specific_humidity_2m_kg_per_kg ||
+            !pet->forcing_data_air_temperature_2m_K ||
+            !pet->forcing_data_u_wind_speed_10m_m_per_s ||
+            !pet->forcing_data_v_wind_speed_10m_m_per_s) return BMI_FAILURE;
         FILE* ffp = fopen(pet->forcing_file, "r");
         // Ensure still exists
         if (ffp == NULL) {
@@ -76,8 +92,7 @@ Initialize (Bmi *self, const char *cfg_file)
         char* ret = NULL;
         // First read the header line
         ret = fgets(line_str, max_forcing_line_length + 1, ffp);
-        if (ret == NULL)
-            return BMI_FAILURE;
+        if (ret == NULL) { fclose(ffp); return BMI_FAILURE; }
 
         if (pet->bmi.verbose > 2) 
             printf("the number of time steps from the forcing file is: %8.6e \n", (double)pet->bmi.num_timesteps);
@@ -85,8 +100,7 @@ Initialize (Bmi *self, const char *cfg_file)
         aorc_forcing_data_pet forcings;
         for (int i = 0; i < pet->bmi.num_timesteps; i++) {
             ret = fgets(line_str, max_forcing_line_length + 1, ffp);  // read in a line of AORC data.
-            if (ret == NULL)
-                return BMI_FAILURE;
+            if (ret == NULL) { fclose(ffp); return BMI_FAILURE; }
             parse_aorc_line_pet(line_str, &year, &month, &day, &hour, &minute, &dsec, &forcings);
             pet->forcing_data_precip_kg_per_m2[i] = forcings.precip_kg_per_m2 * ((double)pet->bmi.time_step_size_s);
             if (pet->bmi.verbose >4)
@@ -134,10 +148,16 @@ Update (Bmi *self)
 {
     pet_model *pet = (pet_model *) self->data;
   
+    if (!pet) return BMI_FAILURE;
     if (pet->bmi.verbose >1)
       printf("BMI Update PET ...\n");
   
-    run_pet(pet);
+    if (pet == NULL || pet->bmi.time_step_size_s <= 0.0 ||
+        (pet->bmi.is_forcing_from_bmi == 0 &&
+         pet->bmi.current_step >= pet->bmi.num_timesteps))
+        return BMI_FAILURE;
+    if (run_pet(pet) != 0)
+        return BMI_FAILURE;
 
     pet->bmi.current_time_step += pet->bmi.time_step_size_s; // Seconds since start of run
     pet->bmi.current_step +=1;                            // time steps since start of run
@@ -161,30 +181,24 @@ Update_until (Bmi *self, double t)
 
     if(self->get_time_step (self, &dt) == BMI_FAILURE)
         return BMI_FAILURE;
-    if(dt == 0.0)
+    if(dt <= 0.0 || !isfinite(t))
         return BMI_FAILURE;
     if(self->get_current_time(self, &now) == BMI_FAILURE)
         return BMI_FAILURE;    
 
-    {
-    
-    int n;
-    double frac;
-    const double n_steps = (t - now) / dt;
-    for (n=0; n<(int)n_steps; n++) {
-        Update (self);
-    }
-    frac = n_steps - (int)n_steps;
-    if (frac > 0){
-        printf("WARNING: PET trying to update a fraction of a timestep\n");
-        
-        // change timestep to remaining fraction & call update()
-        pet->bmi.time_step_size_s = frac * dt;
-        Update (self);
-        pet->bmi.time_step_size_s = dt;
-    }
-
-    }
+    if (t < now || (pet->bmi.is_forcing_from_bmi == 0 &&
+        t > pet->bmi.num_timesteps * dt)) return BMI_FAILURE;
+    /* FLO 10/26: A fractional Update previously advanced current_step by
+     * one whole forcing record while advancing time by only a fraction.
+     * Reject fractional requests until forcing interpolation is defined.
+     */
+    double steps = (t - now) / dt;
+    double rounded_steps = nearbyint(steps);
+    if (fabs(steps - rounded_steps) > 1.0e-9 ||
+        rounded_steps < 0.0 || rounded_steps > (double)INT_MAX)
+        return BMI_FAILURE;
+    for (int n = 0; n < (int)rounded_steps; ++n)
+        if (Update(self) != BMI_SUCCESS) return BMI_FAILURE;
 
   return BMI_SUCCESS;
 }
@@ -335,25 +349,32 @@ pet_model *
 new_bmi_pet()
 {
     pet_model *data;
-    data = (pet_model*) malloc(sizeof(pet_model));
+    data = (pet_model*) calloc(1, sizeof(pet_model));
 
     return data;
 }
 
-static int 
+static int
 Finalize (Bmi *self)
 {
-
-  // Perform Unit Tests, if set in config file.
-  pet_model *pet = (pet_model *) self->data;
-  if (pet->bmi.run_unit_tests == 1)
-    pet_unit_tests(pet);
-
-  if (self){
-    pet_model* model = (pet_model *)(self->data);
-    self->data = (void*)new_bmi_pet();
-  }
-  return BMI_SUCCESS;
+    if (self == NULL || self->data == NULL)
+        return BMI_FAILURE;
+    pet_model *pet = (pet_model *)self->data;
+    if (pet->bmi.run_unit_tests == 1)
+        pet_unit_tests(pet);
+    free(pet->forcing_file);
+    free(pet->forcing_data_precip_kg_per_m2);
+    free(pet->forcing_data_surface_pressure_Pa);
+    free(pet->forcing_data_time);
+    free(pet->forcing_data_incoming_shortwave_W_per_m2);
+    free(pet->forcing_data_incoming_longwave_W_per_m2);
+    free(pet->forcing_data_specific_humidity_2m_kg_per_kg);
+    free(pet->forcing_data_air_temperature_2m_K);
+    free(pet->forcing_data_u_wind_speed_10m_m_per_s);
+    free(pet->forcing_data_v_wind_speed_10m_m_per_s);
+    free(pet);
+    self->data = NULL;
+    return BMI_SUCCESS;
 }
 
 //---------------------------------------------------------------------------------------------------------------------
@@ -362,7 +383,8 @@ Get_start_time (Bmi *self, double * time)
 {
     // TODO: Get the real starting time, not zero. 
     // jmframe: I think this should be the time of the first line in the forcing file. In seconds since 1970
-    *time = 0.0;
+    if (!self || !self->data || !time) return BMI_FAILURE;
+    *time = 0.0; /* BMI simulation-relative seconds */
     return BMI_SUCCESS;
 }
 
@@ -438,7 +460,7 @@ static const char *input_var_locations[INPUT_VAR_NAME_COUNT] = {
 static const char *input_var_names[INPUT_VAR_NAME_COUNT] = {
     "land_surface_radiation~incoming~longwave__energy_flux",
     "land_surface_air__pressure",
-    "atmosphere_air_water~vapor__relative_saturation",
+    "atmosphere_air_water~vapor__specific_humidity",
     "land_surface_radiation~incoming~shortwave__energy_flux",
     "land_surface_air__temperature",
     "land_surface_wind__x_component_of_velocity",
@@ -469,36 +491,15 @@ static const char *input_var_units[INPUT_VAR_NAME_COUNT] = {
 
 //---------------------------------------------------------------------------------------------------------------------
 
-static int Get_end_time (Bmi *self, double * time)
+static int Get_end_time (Bmi *self, double *time)
 {
-/*  
-  Get_start_time(self, time);
-
-  *time += (((pet_model *) self->data)->bmi.num_timesteps * 
-            ((pet_model *) self->data)->bmi.time_step_size_s);
-
-  return BMI_SUCCESS;*/
-
-    // JG EDIT
-    pet_model *pet;
-    pet = (pet_model *) self->data;
-    Get_start_time(self, time);
-    
-    // see if numsteps is set via config
-    if (pet->bmi.num_timesteps == 1){
-        // if ==1 (not really defined) set to FLT_MAX macro via float.h
-        // See https://bmi.readthedocs.io/en/latest/#get-end-time
-        *time += FLT_MAX;
-        return BMI_SUCCESS;
-    }
-    else {
-        // otherwise, set via numsteps
-        *time += pet->bmi.num_timesteps * pet->bmi.time_step_size_s;
-        return BMI_SUCCESS;
-    }
-    
+    if (!self || !self->data || !time) return BMI_FAILURE;
+    pet_model *pet = (pet_model *)self->data;
+    if (pet->bmi.num_timesteps < 0 || pet->bmi.time_step_size_s <= 0.0)
+        return BMI_FAILURE;
+    *time = pet->bmi.num_timesteps * pet->bmi.time_step_size_s;
+    return BMI_SUCCESS;
 }
-
 
 //---------------------------------------------------------------------------------------------------------------------
 
@@ -522,8 +523,7 @@ static int Get_current_time (Bmi *self, double * time)
     if (((pet_model *) self->data)->bmi.verbose > 2){
         printf("Current model time step: '%8.6e'\n", ((pet_model *) self->data)->bmi.current_time_step);
     }
-    *time += (((pet_model *) self->data)->bmi.current_step * 
-              ((pet_model *) self->data)->bmi.time_step_size_s);
+    *time += ((pet_model *)self->data)->bmi.current_time_step;
     return BMI_SUCCESS;
 } // end Get_current_time
 
@@ -597,6 +597,7 @@ int read_file_line_counts_pet(const char* file_name, int* line_count, int* max_l
 //---------------------------------------------------------------------------------------------------------------------
 int read_init_config_pet(pet_model* model, const char* config_file)//,
 {
+    if (!model || !config_file) return BMI_FAILURE;
     int config_line_count, max_config_line_length;
     // Note that this determines max line length including the ending return character, if present
     int count_result = read_file_line_counts_pet(config_file, &config_line_count, &max_config_line_length);
@@ -617,13 +618,32 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
     for (int i = 0; i < config_line_count; i++) {
         char *param_key, *param_value;
         ret = fgets(config_line, max_config_line_length + 1, fp);
-        if (ret == NULL)
-            return BMI_FAILURE;
+        if (ret == NULL) { fclose(fp); return BMI_FAILURE; }
         char* config_line_ptr = config_line;
         config_line_ptr = strsep(&config_line_ptr, "\n");
         param_key = strsep(&config_line_ptr, "=");
         param_value = strsep(&config_line_ptr, "=");
+        if (!param_key || !param_value || !*param_value) {
+            fclose(fp);
+            return BMI_FAILURE;
+        }
 
+        /* FLO 10/26: strtod(..., NULL) silently accepted malformed numeric
+         * settings as zero. Validate every numeric configuration value before
+         * assigning it, while leaving the forcing_file string untouched.
+         */
+        if (strcmp(param_key, "forcing_file") != 0 && strcmp(param_key, "cloud_base_height_known") != 0) {
+            char *end = NULL;
+            errno = 0;
+            double parsed_value = strtod(param_value, &end);
+            while (end && isspace((unsigned char)*end)) ++end;
+            if (errno == ERANGE || !isfinite(parsed_value) || end == param_value || !end || *end != '\0') {
+                fprintf(stderr, "Invalid PET configuration value for %s: %s\n",
+                        param_key, param_value);
+                fclose(fp);
+                return BMI_FAILURE;
+            }
+        }
         if (strcmp(param_key, "verbose") == 0){
             model->bmi.verbose = strtod(param_value, NULL);
             if(model->bmi.verbose > 1){
@@ -650,7 +670,9 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
             continue;
         }
         if (strcmp(param_key, "forcing_file") == 0) {
+            free(model->forcing_file);
             model->forcing_file = strdup(param_value);
+            if (!model->forcing_file) { fclose(fp); return BMI_FAILURE; }
             if (strcmp(model->forcing_file,"BMI") == 0){
                 if(model->bmi.verbose >=2)
                     printf("in pet_setup: Getting forcing values from BMI. Not reading in forcing from file. \n");
@@ -734,14 +756,9 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
             }
             continue;
         }
-        if (strcmp(param_key, "surface_shortwave_albedo") == 0) {
-            model->surf_rad_params.surface_shortwave_albedo = strtod(param_value, NULL);
-            if(model->bmi.verbose >=2){
-                printf("surface_shortwave_albedo from config file \n");
-                printf("%lf\n", model->surf_rad_params.surface_shortwave_albedo);
-            }
-            continue;
-        }
+        /* FLO 10/26: Removed a duplicate albedo configuration branch;
+         * the first branch already handles this parameter.
+         */
         if (strcmp(param_key, "latitude_degrees") == 0) {
             model->solar_params.latitude_degrees = strtod(param_value, NULL);
             if(model->bmi.verbose >=2){
@@ -770,6 +787,8 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
             model->bmi.time_step_size_s = strtod(param_value, NULL);
             if(model->bmi.verbose >=2){
                 printf("time_step_size_s from config file \n");
+                /* FLO 10/26: time_step_size_s is an int; passing it to %g
+                 * invokes undefined behavior. Use the matching integer format. */
                 printf("%d\n", model->bmi.time_step_size_s);
             }
             continue;
@@ -792,6 +811,12 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
 
     } // end loop through config
     fclose(fp);
+
+    /* FLO 10/26: Reject invalid timestep and forcing count at initialization
+     * rather than allowing a later divide-by-zero or invalid allocation.
+     */
+    if (model->bmi.time_step_size_s <= 0 ||
+        model->bmi.num_timesteps < 0) return BMI_FAILURE;
 
     // Validate parameters here if needed
     if (model->pet_params.zero_plane_displacement_height_m <= 0.0){
@@ -912,6 +937,11 @@ static int Get_var_grid(Bmi *self, const char *name, int *grid)
 // ***********************************************************
 static int Get_value_ptr (Bmi *self, const char *name, void **dest)
 {
+    /* FLO 10/26: BMI callers may supply null arguments; avoid strcmp and
+     * dereference on invalid pointers.
+     */
+    if (!self || !self->data || !name || !dest) return BMI_FAILURE;
+    *dest = NULL;
     void *src = NULL;
     /***********************************************************/
     /***********    OUTPUT   ***********************************/
@@ -948,7 +978,7 @@ static int Get_value_ptr (Bmi *self, const char *name, void **dest)
         *dest = src;
         return BMI_SUCCESS;
     }
-    if (strcmp (name, "atmosphere_air_water~vapor__relative_saturation") == 0) {
+    if (strcmp (name, "atmosphere_air_water~vapor__specific_humidity") == 0) {
         pet_model *pet;
         pet = (pet_model *) self->data;
         src = (void*)&pet->aorc.specific_humidity_2m_kg_per_kg;
@@ -986,6 +1016,10 @@ static int Get_value_at_indices (Bmi *self, const char *name, void *dest, int * 
     void *src = NULL;
     int itemsize = 0;
 
+    /* FLO 10/26: Reject invalid BMI pointers before dereferencing them. */
+    if (!self || !self->data || !name || len < 0 ||
+        (len > 0 && (!inds || !dest))) return BMI_FAILURE;
+    for (int i = 0; i < len; ++i) if (inds[i] != 0) return BMI_FAILURE;
     if (self->get_value_ptr(self, name, &src) == BMI_FAILURE)
         return BMI_FAILURE;
 
@@ -1008,6 +1042,8 @@ static int Get_value_at_indices (Bmi *self, const char *name, void *dest, int * 
 //------------------------------------------------------------------------------
 static int Get_value(Bmi * self, const char * name, void *dest)
 {
+    /* FLO 10/26: A null destination previously reached memcpy and crashed. */
+    if (!self || !name || !dest) return BMI_FAILURE;
     void *src = NULL;
     int nbytes = 0;
 
@@ -1027,6 +1063,12 @@ static int Set_value (Bmi *self, const char *name, void *array)
     void * dest = NULL;
     int nbytes = 0;
 
+    /* FLO 10/26: Guard strcmp against null BMI variable names. */
+    if (!self || !name || !array) return BMI_FAILURE;
+    int writable = 0;
+    for (int i = 0; i < INPUT_VAR_NAME_COUNT; ++i)
+        if (strcmp(name, input_var_names[i]) == 0) writable = 1;
+    if (!writable || !array) return BMI_FAILURE;
     if (self->get_value_ptr(self, name, &dest) == BMI_FAILURE)
         return BMI_FAILURE;
 
@@ -1045,6 +1087,14 @@ static int Set_value_at_indices (Bmi *self, const char *name, int * inds, int le
     void * to = NULL;
     int itemsize = 0;
 
+    /* FLO 10/26: Check the name before strcmp; NULL previously crashed. */
+    if (!self || !self->data || !name || len < 0 ||
+        (len > 0 && (!inds || !src))) return BMI_FAILURE;
+    int writable = 0;
+    for (int i = 0; i < INPUT_VAR_NAME_COUNT; ++i)
+        if (strcmp(name, input_var_names[i]) == 0) writable = 1;
+    if (!writable) return BMI_FAILURE;
+    for (int i = 0; i < len; ++i) if (inds[i] != 0) return BMI_FAILURE;
     if (self->get_value_ptr (self, name, &to) == BMI_FAILURE)
         return BMI_FAILURE;
 
@@ -1129,6 +1179,8 @@ static int Get_var_units (Bmi *self, const char *name, char * units)
 //----------------------------------------------------------------------
 static int Get_var_nbytes (Bmi *self, const char *name, int * nbytes)
 {
+    /* FLO 10/26: Reject null arguments before metadata lookup. */
+    if (!self || !self->data || !name || !nbytes) return BMI_FAILURE;
     int item_size;
     int item_size_result = Get_var_itemsize(self, name, &item_size);
     if (item_size_result != BMI_SUCCESS) {
@@ -1149,8 +1201,9 @@ static int Get_var_nbytes (Bmi *self, const char *name, int * nbytes)
             }
         }
     }
-    if (item_count < 1)
-        item_count = ((pet_model *) self->data)->bmi.num_timesteps;
+    /* FLO 10/26: Unknown item counts must fail; num_timesteps is not
+     * the size of a scalar BMI variable and could overflow memcpy. */
+    if (item_count < 1) return BMI_FAILURE;
 
     *nbytes = item_size * item_count;
     return BMI_SUCCESS;
@@ -1164,7 +1217,7 @@ static int Get_var_nbytes (Bmi *self, const char *name, int * nbytes)
 static int Get_grid_rank (Bmi *self, int grid, int * rank)
 {
     if (grid == 0) {
-        *rank = 1;
+        *rank = 0;
         return BMI_SUCCESS;
     }
     else {

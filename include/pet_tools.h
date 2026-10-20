@@ -113,7 +113,9 @@ double calculate_net_radiation_W_per_sq_m(pet_model *model)
 double calculate_aerodynamic_resistance(pet_model *model)
 {
   // define local variables to ease computations:
-  double wind_speed_measurement_height_m = model->pet_params.wind_speed_measurement_height_m;
+  /* FLO 10/26: run_pet has already normalized the wind to 2 m; using
+   * the original measurement height here misstates aerodynamic resistance. */
+  double wind_speed_measurement_height_m = 2.0;
   double humidity_measurement_height_m = model->pet_params.humidity_measurement_height_m; // default =2.0 [m],
   double zero_plane_displacement_height_m = model->pet_params.zero_plane_displacement_height_m;// depends on surface roughness [m],
   double momentum_transfer_roughness_length_m = model->pet_params.momentum_transfer_roughness_length_m; // [m],
