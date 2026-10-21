@@ -73,4 +73,16 @@ if(BUILD_TESTING)
     add_test(NAME ball_berry_method6
         COMMAND test_ball_berry_method6 ${CMAKE_SOURCE_DIR}/configs/method_6_ball_berry.cfg)
     set_tests_properties(ball_berry_method6 PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+    # BMI unit test, one ctest per method configuration file.
+    add_executable(test_pet_bmi_unit test/main_unit_test_bmi.c)
+    target_include_directories(test_pet_bmi_unit PRIVATE include)
+    target_link_libraries(test_pet_bmi_unit PRIVATE petbmi m)
+    set_target_properties(test_pet_bmi_unit PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON)
+    file(GLOB PET_METHOD_CONFIGURATION_FILES RELATIVE ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/configs/method_*.cfg)
+    foreach(configuration_file ${PET_METHOD_CONFIGURATION_FILES})
+        get_filename_component(configuration_name ${configuration_file} NAME_WE)
+        add_test(NAME bmi_unit_${configuration_name} COMMAND test_pet_bmi_unit ${configuration_file})
+        set_tests_properties(bmi_unit_${configuration_name} PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endforeach()
 endif()

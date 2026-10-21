@@ -729,6 +729,37 @@ static const char *input_var_units[INPUT_VAR_NAME_COUNT] = {
 };
 
 //---------------------------------------------------------------------------------------------------------------------
+/* FLO 10/21: the variables an instance exposes depend on its method. Methods 1-5 expose the
+ * seven AORC forcing inputs and the one PET output, as before method 6 existed. Method 6 also
+ * exposes the Ball-Berry inputs (vegetation state, coupling, time) and its eight coupling outputs.
+ * The tables above list the methods 1-5 variables first, so an instance uses the first
+ * active_*_variable_count entries. Before initialize, the methods 1-5 set is reported. */
+#define METHODS_1_TO_5_INPUT_VARIABLE_COUNT 7
+#define METHODS_1_TO_5_OUTPUT_VARIABLE_COUNT 1
+
+static int active_input_variable_count(Bmi *self)
+{
+    if (self && self->data && ((pet_model *)self->data)->pet_method == 6) return INPUT_VAR_NAME_COUNT;
+    return METHODS_1_TO_5_INPUT_VARIABLE_COUNT;
+}
+
+static int active_output_variable_count(Bmi *self)
+{
+    if (self && self->data && ((pet_model *)self->data)->pet_method == 6) return OUTPUT_VAR_NAME_COUNT;
+    return METHODS_1_TO_5_OUTPUT_VARIABLE_COUNT;
+}
+
+static int is_active_variable(Bmi *self, const char *name)
+{
+    for (int i = 0; i < active_input_variable_count(self); ++i)
+        if (strcmp(name, input_var_names[i]) == 0) return 1;
+    for (int i = 0; i < active_output_variable_count(self); ++i)
+        if (strcmp(name, output_var_names[i]) == 0) return 1;
+    return 0;
+}
+
+
+//---------------------------------------------------------------------------------------------------------------------
 
 static int Get_end_time (Bmi *self, double *time)
 {
@@ -1172,14 +1203,14 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
 static int Get_var_type (Bmi *self, const char *name, char * type)
 {
     // Check to see if in output array first
-    for (int i = 0; i < OUTPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_output_variable_count(self); i++) {
         if (strcmp(name, output_var_names[i]) == 0) {
             strncpy(type, output_var_types[i], BMI_MAX_TYPE_NAME);
             return BMI_SUCCESS;
         }
     }
     // Then check to see if in input array
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_input_variable_count(self); i++) {
         if (strcmp(name, input_var_names[i]) == 0) {
             strncpy(type, input_var_types[i], BMI_MAX_TYPE_NAME);
             return BMI_SUCCESS;
@@ -1232,14 +1263,14 @@ static int Get_var_itemsize (Bmi *self, const char *name, int * size)
 static int Get_var_location (Bmi *self, const char *name, char * location)
 {
     // Check to see if in output array first
-    for (int i = 0; i < OUTPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_output_variable_count(self); i++) {
         if (strcmp(name, output_var_names[i]) == 0) {
             strncpy(location, output_var_locations[i], BMI_MAX_LOCATION_NAME);
             return BMI_SUCCESS;
         }
     }
     // Then check to see if in input array
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_input_variable_count(self); i++) {
         if (strcmp(name, input_var_names[i]) == 0) {
             strncpy(location, input_var_locations[i], BMI_MAX_LOCATION_NAME);
             return BMI_SUCCESS;
@@ -1255,14 +1286,14 @@ static int Get_var_grid(Bmi *self, const char *name, int *grid)
 {
 
     // Check to see if in output array first
-    for (int i = 0; i < OUTPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_output_variable_count(self); i++) {
         if (strcmp(name, output_var_names[i]) == 0) {
             *grid = output_var_grids[i];
             return BMI_SUCCESS;
         }
     }
     // Then check to see if in input array
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_input_variable_count(self); i++) {
         if (strcmp(name, input_var_names[i]) == 0) {
             *grid = input_var_grids[i];
             return BMI_SUCCESS;
@@ -1283,6 +1314,7 @@ static int Get_value_ptr (Bmi *self, const char *name, void **dest)
      */
     if (!self || !self->data || !name || !dest) return BMI_FAILURE;
     *dest = NULL;
+    if (!is_active_variable(self, name)) return BMI_FAILURE;   // FLO 10/21: method 6 variables only for method 6
     void *src = NULL;
     /***********************************************************/
     /***********    OUTPUT   ***********************************/
@@ -1524,7 +1556,7 @@ static int Set_value (Bmi *self, const char *name, void *array)
     /* FLO 10/26: Guard strcmp against null BMI variable names. */
     if (!self || !name || !array) return BMI_FAILURE;
     int writable = 0;
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; ++i)
+    for (int i = 0; i < active_input_variable_count(self); ++i)
         if (strcmp(name, input_var_names[i]) == 0) writable = 1;
     if (!writable || !array) return BMI_FAILURE;
     if (self->get_value_ptr(self, name, &dest) == BMI_FAILURE)
@@ -1551,7 +1583,7 @@ static int Set_value_at_indices (Bmi *self, const char *name, int * inds, int le
     if (!self || !self->data || !name || len < 0 ||
         (len > 0 && (!inds || !src))) return BMI_FAILURE;
     int writable = 0;
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; ++i)
+    for (int i = 0; i < active_input_variable_count(self); ++i)
         if (strcmp(name, input_var_names[i]) == 0) writable = 1;
     if (!writable) return BMI_FAILURE;
     for (int i = 0; i < len; ++i) if (inds[i] != 0) return BMI_FAILURE;
@@ -1590,14 +1622,14 @@ static int Get_component_name (Bmi *self, char * name)
 //----------------------------------------------------------------------
 static int Get_input_item_count (Bmi *self, int * count)
 {
-    *count = INPUT_VAR_NAME_COUNT;
+    *count = active_input_variable_count(self);
     return BMI_SUCCESS;
 }
 
 //----------------------------------------------------------------------
 static int Get_input_var_names (Bmi *self, char ** names)
 {
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_input_variable_count(self); i++) {
         strncpy (names[i], input_var_names[i], BMI_MAX_VAR_NAME);
     }
     return BMI_SUCCESS;
@@ -1606,14 +1638,14 @@ static int Get_input_var_names (Bmi *self, char ** names)
 //----------------------------------------------------------------------
 static int Get_output_item_count (Bmi *self, int * count)
 {
-    *count = OUTPUT_VAR_NAME_COUNT;
+    *count = active_output_variable_count(self);
     return BMI_SUCCESS;
 }
 
 //----------------------------------------------------------------------
 static int Get_output_var_names (Bmi *self, char ** names)
 {
-    for (int i = 0; i < OUTPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_output_variable_count(self); i++) {
         strncpy (names[i], output_var_names[i], BMI_MAX_VAR_NAME);
     }
     return BMI_SUCCESS;
@@ -1623,14 +1655,14 @@ static int Get_output_var_names (Bmi *self, char ** names)
 static int Get_var_units (Bmi *self, const char *name, char * units)
 {
     // Check to see if in output array first
-    for (int i = 0; i < OUTPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_output_variable_count(self); i++) {
         if (strcmp(name, output_var_names[i]) == 0) {
             strncpy(units, output_var_units[i], BMI_MAX_UNITS_NAME);
             return BMI_SUCCESS;
         }
     }
     // Then check to see if in input array
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_input_variable_count(self); i++) {
         if (strcmp(name, input_var_names[i]) == 0) {
             strncpy(units, input_var_units[i], BMI_MAX_UNITS_NAME);
             return BMI_SUCCESS;
@@ -1652,14 +1684,14 @@ static int Get_var_nbytes (Bmi *self, const char *name, int * nbytes)
         return BMI_FAILURE;
     }
     int item_count = -1;
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_input_variable_count(self); i++) {
         if (strcmp(name, input_var_names[i]) == 0) {
             item_count = input_var_item_count[i];
             break;
         }
     }
     if (item_count < 1) {
-        for (int i = 0; i < OUTPUT_VAR_NAME_COUNT; i++) {
+        for (int i = 0; i < active_output_variable_count(self); i++) {
             if (strcmp(name, output_var_names[i]) == 0) {
                 item_count = output_var_item_count[i];
                 break;
