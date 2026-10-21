@@ -1,0 +1,93 @@
+noahmp_name,value,units,description
+PRECISION,r4,-,build: r4 = 32-bit REAL as NWM; r8 = -fdefault-real-8
+TIME,2016-07-01 12:00:00,-,forcing time stamp
+VEGTYP,15,-,USGS vegetation type
+OPT_RAD,3,-,radiation transfer option
+OPT_CRS,1,-,stomatal resistance option (1 = Ball-Berry)
+OPT_SFC,1,-,surface layer drag option (1 = SFCDIF1)
+JULIAN, 1.8250000000000000E+002,day,days since Jan 1 00Z
+SFCTMP, 2.8529998779296875E+002,K,air temperature at reference height
+SFCPRS, 1.0029000000000000E+005,Pa,surface pressure
+QAIR, 8.7999999523162842E-003,kg/kg,specific humidity
+EAIR, 1.4113461914062500E+003,Pa,air vapor pressure
+RHOAIR, 1.2181396484375000E+000,kg/m3,air density
+LWDN, 3.6160000610351562E+002,W/m2,downward longwave
+SOLDN, 6.0000000000000000E+002,W/m2,downward shortwave
+SOLAD_VIS, 2.1000000000000000E+002,W/m2,direct visible
+SOLAD_NIR, 2.1000000000000000E+002,W/m2,direct near infrared
+SOLAI_VIS, 9.0000000000000000E+001,W/m2,diffuse visible
+SOLAI_NIR, 9.0000000000000000E+001,W/m2,diffuse near infrared
+UR, 2.4186773300170898E+000,m/s,wind speed at ZLVL (>= 1)
+COSZ, 6.4999997615814209E-001,-,cosine solar zenith angle
+CO2AIR, 3.9614551544189453E+001,Pa,CO2 partial pressure
+O2AIR, 2.0960611328125000E+004,Pa,O2 partial pressure
+HVT, 8.0000000000000000E+000,m,canopy top height
+ZPD, 5.1999998092651367E+000,m,zero plane displacement = 0.65*HVT
+Z0M, 8.0000001192092896E-001,m,momentum roughness (Z0H = Z0M in VEGE_FLUX)
+Z0MG, 2.0000000949949026E-003,m,ground roughness (Z0HG = Z0MG)
+ZLVL, 1.0000000000000000E+001,m,reference height above ground
+CWP, 2.8999999165534973E-001,-,canopy wind parameter
+LAI, 4.3000001907348633E+000,m2/m2,leaf area index
+SAI, 5.4508191347122192E-001,m2/m2,stem area index
+ELAI, 4.3000001907348633E+000,m2/m2,leaf area index above the snow
+ESAI, 5.4508191347122192E-001,m2/m2,stem area index above the snow
+FSNO, 0.0000000000000000E+000,-,snow cover fraction (imposed)
+SNOWH, 0.0000000000000000E+000,m,snow depth (imposed)
+FWET, 0.0000000000000000E+000,-,wetted fraction of canopy (imposed)
+CANLIQ, 0.0000000000000000E+000,mm,intercepted liquid water (imposed)
+VAI, 4.8450822830200195E+000,m2/m2,LAI + SAI
+FVEG, 8.0000001192092896E-001,-,green vegetation fraction
+IGS, 1.0000000000000000E+000,-,growing season index
+EMV, 9.9213302135467529E-001,-,vegetation emissivity 1-exp(-VAI)
+EMG, 9.7000002861022949E-001,-,ground emissivity
+BTRAN, 1.0000000000000000E+000,-,root stress factor (imposed)
+FOLN, 1.0000000000000000E+000,%,foliage nitrogen
+RSURF, 1.0000000000000000E+002,s/m,ground surface resistance (imposed)
+RHSUR, 1.0000000000000000E+000,-,ground pore air relative humidity (imposed)
+GAMMAV, 6.4526008605957031E+001,Pa/K,psychrometric constant for vegetation
+GAMMAG, 6.4526008605957031E+001,Pa/K,psychrometric constant for ground
+LATHEAV, 2.5104000000000000E+006,J/kg,latent heat for vegetation
+TV_INITIAL, 2.8529998779296875E+002,K,initial vegetation temperature
+TAH_INITIAL, 2.8529998779296875E+002,K,initial canopy air temperature
+EAH_INITIAL, 1.4113461914062500E+003,Pa,initial canopy air vapor pressure
+ESTV_INITIAL, 1.4145345458984375E+003,Pa,EI passed to STOMATA (esat at initial TV); RB on iteration 1 is in the trace file
+FSUN, 2.6980346441268921E-001,-,sunlit fraction of canopy
+LAISUN, 1.1601549386978149E+000,m2/m2,sunlit leaf area index
+LAISHA, 3.1398451328277588E+000,m2/m2,shaded leaf area index
+PARSUN, 1.3549685668945312E+002,W/m2,absorbed PAR per unit sunlit LAI
+PARSHA, 1.4045451164245605E+001,W/m2,absorbed PAR per unit shaded LAI
+SAV, 3.9476040649414062E+002,W/m2,shortwave absorbed by vegetation
+SAG, 1.1247257995605469E+002,W/m2,shortwave absorbed by ground
+FSA, 5.0723300170898438E+002,W/m2,total absorbed shortwave
+FSR, 9.2766998291015625E+001,W/m2,total reflected shortwave
+BGAP, 0.0000000000000000E+000,-,between canopy gap fraction (OPT_RAD = 1 only)
+WGAP, 0.0000000000000000E+000,-,within canopy gap fraction (OPT_RAD = 1 only)
+TV, 2.8817279052734375E+002,K,vegetation temperature
+TAH, 2.8699053955078125E+002,K,canopy air temperature
+EAH, 1.4269882812500000E+003,Pa,canopy air vapor pressure
+TG, 2.8629998779296875E+002,K,ground skin temperature (prescribed)
+TG_AFTER_VEGE_FLUX, 2.8629998779296875E+002,K,TG returned by VEGE_FLUX: OPT_STC = 3 resets it when SNOWH > 0.05 m and TG > TFRZ
+RSSUN, 3.0322039794921875E+002,s/m,sunlit stomatal resistance
+RSSHA, 5.1134594726562500E+002,s/m,shaded stomatal resistance
+PSNSUN, 5.9430661201477051E+000,umol/m2/s,sunlit leaf photosynthesis
+PSNSHA, 3.5135583877563477E+000,umol/m2/s,shaded leaf photosynthesis
+CM, 6.7578278481960297E-002,-,momentum drag coefficient
+CH, 1.9151805341243744E-001,m/s,returned CH = CAH = canopy air to ZLVL conductance
+CHLEAF, 2.8103983402252197E-001,m/s,leaf exchange coefficient (CVH)
+CHUC, 1.1088013648986816E-002,m/s,under canopy exchange coefficient
+IRC, 3.1103246688842773E+001,W/m2,canopy net longwave (+ to atm)
+SHC, 3.2481994628906250E+002,W/m2,canopy sensible heat (+ to atm)
+EVC, 0.0000000000000000E+000,W/m2,canopy evaporation heat (+ to atm)
+TR, 3.8837200164794922E+001,W/m2,transpiration heat (+ to atm)
+IRG,-9.5395812988281250E+000,W/m2,ground net longwave under canopy
+SHG,-9.3703870773315430E+000,W/m2,ground sensible heat under canopy
+EVG, 8.3239364624023438E+000,W/m2,ground evaporation heat under canopy
+GH, 1.2305861663818359E+002,W/m2,ground heat flux implied by prescribed TG (+ into soil)
+T2MV, 2.8578454589843750E+002,K,2 m air temperature over vegetation
+Q2V, 8.8288607075810432E-003,kg/kg,2 m specific humidity over vegetation
+TAUXV, 4.7785201668739319E-001,N/m2,eastward wind stress
+TAUYV, 5.9731502085924149E-002,N/m2,northward wind stress
+CANOPY_RESIDUAL, 3.0517578125000000E-005,W/m2,SAV - (IRC + SHC + EVC + TR)
+ETRAN_MM_PER_H, 5.5693883448839188E-002,mm/h,transpiration = TR/LATHEAV
+RAHG, 9.0187477111816406E+001,s/m,under-canopy resistance = 1/CHUC
+GROUND_LW_ABSORBED, 3.7906140136718750E+002,W/m2,absorbed part of IRG: EMG*((1-EMV)*LWDN + EMV*SB*TV**4)

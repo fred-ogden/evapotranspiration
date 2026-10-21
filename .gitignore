@@ -9,3 +9,5 @@ build/
 # compiled test executables start with run; run scripts do not count
 !run*.sh
 test/output/
+noahmp_comparison/build/
+noahmp_comparison/output/

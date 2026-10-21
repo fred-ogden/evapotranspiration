@@ -1,32 +1,63 @@
 # Basic Model Interface (BMI) for potential evapotranspiration (PET) functions:
-* Aerodynamic method
-* Combination method
-* Energy balance method
-* Penman Monteith method
-* Priestley Taylor method
+1. Radiation balance (energy balance) method
+2. Aerodynamic method
+3. Combination method
+4. Priestley Taylor method
+5. Penman Monteith method
+6. Ball-Berry canopy transpiration, Noah-MP physics (BMI only; see [doc/ball_berry_method6.md](doc/ball_berry_method6.md))
 
-# The configuration file (./configs/pet_config*.txt)
-Many options are available when running this PET module. One option is passed into the executable, and that is the specific PET method option, the rest are passed in through the configuration file. These include forcing data (type and location), vegetation characteristics, site latitude/longitude/elevation, turbidity roughness and options about the forcings available vs calculated and assumed. Each instance of a PET model should have its own unique configuration file. 
+Methods 1-5 return potential evapotranspiration. Method 6 returns the canopy transpiration from
+the Noah-MP leaf energy balance with Ball-Berry stomatal resistance, given the root stress factor
+of the hydrologic model, plus the coupling outputs a soil freeze-thaw, snow, canopy interception
+and bare soil evaporation module need.
 
-# Compiling this code
-The BMI functionality was developed as a standalone module in C. To compile this code the developer used these steps:
-1. `module load gnu/10.1.0`
-2. `gcc -lm ./src/main_read_forcing.c ./src/pet.c ./src/bmi_pet.c -o run_bmi`
-This should generate an executable called **run_bmi**. To run this executable you must pass the path to the corresponding configuration file, which includes the PET method you would like to run. Unit tests for those methods, and corresponding are provided, and can be run using:
-1. Energy balance method: `./run_bmi pet_config_unit_test1.txt`
-2. Aerodynamic method: `./run_bmi pet_config_unit_test2.txt`
-3. Combination method: `./run_bmi pet_config_unit_test3.txt`
-4. Priestley Taylor method: `./run_bmi pet_config_unit_test4.txt`
-5. Penman Monteith method: `./run_bmi pet_config_unit_test5.txt`  
-Included in this repository is an environment file (env_cheyenne.sh), and two "make and run" files. `make_and_run_read_forcings.sh` will compile the code and run the five PET methods. 
-The other is `make_and_run_pass_forcings.sh`, which is an example of how the PET model will be run in a framework, where the forcing values are passed in through BMI functions (e.g., set_value()). An environment file exists, which should allow you to run compile and run the potential evaporation routines: `source env_cheyenne.sh`. Then all you need to do is run one or both of the two scripts:
-1. `./make_and_run_read_forcings.sh`  
-2. `./make_and_run_pass_forcings.sh`  (**note:** if running with this script, you need to first get the forcing code from its repo by running `git submodule update --init` from the main level of the `evapotranspiration` directory.
+# The configuration files (./configs/method_N_*.cfg)
+There is one configuration file per method, all with the same layout:
+
+| File | Method |
+|---|---|
+| `configs/method_1_radiation_balance.cfg` | 1 |
+| `configs/method_2_aerodynamic_method.cfg` | 2 |
+| `configs/method_3_combination_method.cfg` | 3 |
+| `configs/method_4_priestley_taylor_method.cfg` | 4 |
+| `configs/method_5_penman_monteith_method.cfg` | 5 |
+| `configs/method_6_ball_berry.cfg` | 6 |
+
+Each file has four commented sections: 1 control, 2 time and 3 site, with the same keys in all
+six files, then 4 the parameters of the method. The format is `key = value`, one per line, and
+`#` starts a comment. All six set `forcing_file = BMI` (forcing passed with `set_value`) and name a
+`forcing_csv_file` that the test drivers read. For methods 1-5, `forcing_file` may instead name a
+CSV file that PET reads itself. Each instance of a PET model should have its own configuration file.
+
+The variables an instance exposes on its BMI depend on its method: methods 1-5 have the seven
+AORC forcing inputs and one output, `water_potential_evaporation_flux`; method 6 has 31 inputs
+(forcing, vegetation state, coupling inputs, calendar time) and 9 outputs.
+
+# Compiling and testing
+With CMake (shared library `petbmi` and all tests):
+
+```
+cmake -S . -B build && cmake --build build && (cd build && ctest --output-on-failure)
+```
+
+The test scripts, run from the repository root:
+
+| Script | Test |
+|---|---|
+| `test/make_and_run_bmi_unit_test.sh` | BMI unit test, all six methods ([test/README.md](test/README.md)) |
+| `./test_bmi.sh` | BMI regression and negative tests (method 5) |
+| `./make_and_run_read_forcings.sh` | standalone, PET reads its own forcing (methods 1-5) |
+| `./make_and_run_pass_forcings.sh` | standalone, the AORC BMI module passes the forcing (all six methods); run `git submodule update --init` first |
+| `./noahmp_comparison/check_C_against_stored_reference.sh` | method 6 against the stored NWM Noah-MP results |
+| `./noahmp_comparison/run_ball_berry_C_and_Fortran.sh` | method 6 against NWM Noah-MP built from its source (not in this repository) |
+
+Each script prints its usage with `-h`. The read-forcing script prints the methods 1-5 unit test
+results next to their expected values. An environment file for Cheyenne is included (`source env_cheyenne.sh`).
 
 To build this code for use in the [Next Generation Water Resources Modeling Framework](https://github.com/NOAA-OWP/ngen), please follow the build instructions in [INSTALL.md](INSTALL.md).
 
 # This rough code outline shows a basic outline of workflow. 
-The `pet_bmi.c` file runs BMI functions that initialize, update and finalize an instance of a PET model. It also includes descriptive functions to interpret specifics of the model, such as variable names, units, time/timestep, etc. And it also allows a user (or framework) to get and set values in this model. The `bmi_pet.c` code interacts with the `pet.c` code, which sets up the model based on the PET method chosen. For instance, the aerodynamic method does not calculate the net radiation before calling the PET subroutine, but the other PET methods do. This pet.c file then calls one of the five PET methods available at this time. When a method is called it returns a value for PET in m/s, and that is set directly to the BMI model structure.
+The `bmi_pet.c` file runs BMI functions that initialize, update and finalize an instance of a PET model. It also includes descriptive functions to interpret specifics of the model, such as variable names, units, time/timestep, etc. And it also allows a user (or framework) to get and set values in this model. The `bmi_pet.c` code interacts with the `pet.c` code, which sets up the model based on the PET method chosen. For instance, the aerodynamic method does not calculate the net radiation before calling the PET subroutine, but the other PET methods do. This pet.c file then calls one of the six PET methods. When a method is called it returns a value for PET in m/s, and that is set directly to the BMI model structure.
 ![code_flow](./figs/bmi_pet.png)
 
 # Notes from author of the PET functions
