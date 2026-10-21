@@ -38,6 +38,26 @@ extern int run_pet(pet_model* model)
     printf("Running the PET model \n");
     printf("model->bmi.is_forcing_from_bmi %d \n", model->bmi.is_forcing_from_bmi);
   }
+  if (model->pet_method == 6) {
+    NoahmpStabilityInput input;
+    NoahmpStabilityOutput output;
+    if (model->bb_stability_input_ready != TRUE) {
+      fprintf(stderr, "ERROR: PET method 6 requires a complete canopy forcing state.\n");
+      return -1;
+    }
+    input = model->bb_stability_input;
+    if (model->bb_noahmp_compatibility == TRUE) {
+      input.canopy.stomata_update_mode = NOAHMP_STOMATA_REFERENCE_FROZEN;
+    } else {
+      input.canopy.stomata_update_mode = NOAHMP_STOMATA_REEVALUATE;
+    }
+    model->bb_stability_input_ready = FALSE; // Consume forcing even if the solver fails.
+    if (noahmp_stability_coupled_solve(&input, &output) != 0) return -1;
+    model->bb_pot_transpiration_m_per_s = output.canopy.foliage.potential_transpiration_m_per_s;
+    model->pet_m_per_s = model->bb_pot_transpiration_m_per_s;
+    if (model->pet_m_per_s < 0.0) model->pet_m_per_s = 0.0;
+    return 0;
+  }
   if (model->pet_method < 1 || model->pet_method > 5) return -1;
   if (model->pet_params.zero_plane_displacement_height_m <= 0.0){
     fprintf(stderr, "ERROR: zero_plane_displacement_height_m must be > 0.0 m. Current value: %lf\n", model->pet_params.zero_plane_displacement_height_m);

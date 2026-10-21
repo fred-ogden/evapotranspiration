@@ -14,8 +14,32 @@
 #include "../include/bmi.h"
 #include "../include/bmi_pet.h"
 
-#define INPUT_VAR_NAME_COUNT 7 //
+#define INPUT_VAR_NAME_COUNT 13 //
 #define OUTPUT_VAR_NAME_COUNT 1 // water_potential_evaporation_flux; 
+
+// Remove leading and trailing whitespace from a string in place.
+// Returns a pointer to the first non-whitespace character.
+static char *trim_config_whitespace(char *text)
+{
+    char *end;
+
+    while (isspace((unsigned char)*text)) {
+        text++;
+    }
+
+    if (*text == '\0') {
+        return text;
+    }
+
+    end = text + strlen(text) - 1;
+
+    while (end > text && isspace((unsigned char)*end)) {
+        *end = '\0';
+        end--;
+    }
+
+    return text;
+}
 
 static int 
 Initialize (Bmi *self, const char *cfg_file)
@@ -426,7 +450,13 @@ static const int input_var_item_count[INPUT_VAR_NAME_COUNT] = {
   1,
   1,
   1,
-  1
+  1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
 };
 
 //---------------------------------------------------------------------------------------------------------------------
@@ -437,7 +467,13 @@ static const char input_var_grids[INPUT_VAR_NAME_COUNT] = {
         0,
         0,
         0,
-        0
+        0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
 };
 
 //---------------------------------------------------------------------------------------------------------------------
@@ -448,7 +484,13 @@ static const char *input_var_locations[INPUT_VAR_NAME_COUNT] = {
         "node",
         "node",
         "node",
-        "node"
+        "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node"
 };
 
 
@@ -464,7 +506,13 @@ static const char *input_var_names[INPUT_VAR_NAME_COUNT] = {
     "land_surface_radiation~incoming~shortwave__energy_flux",
     "land_surface_air__temperature",
     "land_surface_wind__x_component_of_velocity",
-    "land_surface_wind__y_component_of_velocity"
+    "land_surface_wind__y_component_of_velocity",
+    "LAI",
+    "SAI",
+    "SHDFAC",
+    "CWP",
+    "MP",
+    "VCMX25"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
@@ -475,7 +523,13 @@ static const char *input_var_types[INPUT_VAR_NAME_COUNT] = {
   "double",
   "double",
   "double",
-  "double"
+  "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
@@ -486,7 +540,13 @@ static const char *input_var_units[INPUT_VAR_NAME_COUNT] = {
   "W m-2",
   "K",
   "m s-1",
-  "m s-1"
+  "m s-1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "umol CO2 m-2 s-1"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
@@ -616,18 +676,73 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
     char config_line[max_config_line_length + 1];
 
     for (int i = 0; i < config_line_count; i++) {
-        char *param_key, *param_value;
+        char *param_key;
+        char *param_value;
+        char *equals;
+        char *comment;
+        char *units;
+
         ret = fgets(config_line, max_config_line_length + 1, fp);
-        if (ret == NULL) { fclose(fp); return BMI_FAILURE; }
-        char* config_line_ptr = config_line;
-        config_line_ptr = strsep(&config_line_ptr, "\n");
-        param_key = strsep(&config_line_ptr, "=");
-        param_value = strsep(&config_line_ptr, "=");
-        if (!param_key || !param_value || !*param_value) {
+        if (ret == NULL) {
             fclose(fp);
             return BMI_FAILURE;
         }
 
+        // Remove comments, including comments following a parameter.
+        comment = strchr(config_line, '#');
+        if (comment != NULL) {
+            *comment = '\0';
+        }
+
+        // Ignore blank lines and full-line comments.
+        param_key = trim_config_whitespace(config_line);
+        if (*param_key == '\0') {
+            continue;
+        }
+
+        // Split the parameter name and value at the first equals sign.
+        equals = strchr(param_key, '=');
+        if (equals == NULL) {
+            fprintf(stderr, "Invalid PET configuration line: %s\n", param_key);
+            fclose(fp);
+            return BMI_FAILURE;
+        }
+
+        *equals = '\0';
+
+        param_value = trim_config_whitespace(equals + 1);
+        param_key = trim_config_whitespace(param_key);
+
+        if (*param_key == '\0' || *param_value == '\0') {
+            fprintf(stderr, "Missing PET configuration key or value\n");
+            fclose(fp);
+            return BMI_FAILURE;
+        }
+
+        // Remove optional trailing units annotations, e.g. 3600 [s].
+        // Units are documentation; no unit conversion is performed.
+        if (strcmp(param_key, "forcing_file") != 0) {
+            units = strchr(param_value, '[');
+
+            if (units != NULL) {
+                char *units_end = strchr(units, ']');
+
+                if (units_end == NULL ||
+                    *trim_config_whitespace(units_end + 1) != '\0') {
+                    fprintf(stderr, "Invalid units annotation for %s\n", param_key);
+                    fclose(fp);
+                    return BMI_FAILURE;
+                }
+
+                *units = '\0';
+                param_value = trim_config_whitespace(param_value);
+
+                if (*param_value == '\0') {
+                    fclose(fp);
+                    return BMI_FAILURE;
+                }
+            }
+        }
         /* FLO 10/26: strtod(..., NULL) silently accepted malformed numeric
          * settings as zero. Validate every numeric configuration value before
          * assigning it, while leaving the forcing_file string untouched.
@@ -808,7 +923,193 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
             }
             continue;
         }
+        // Method 6 standalone test parameters.
+        if (strcmp(param_key, "bb_canopy_height_m") == 0) {
+            model->bb_test.canopy_height_m = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_wind_reference_height_m") == 0) {
+            model->bb_test.wind_reference_height_m = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_displacement_height_m") == 0) {
+            model->bb_test.displacement_height_m = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_momentum_roughness_m") == 0) {
+            model->bb_test.momentum_roughness_m = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_heat_roughness_m") == 0) {
+            model->bb_test.heat_roughness_m = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_ground_momentum_roughness_m") == 0) {
+            model->bb_test.ground_momentum_roughness_m = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_ground_heat_roughness_m") == 0) {
+            model->bb_test.ground_heat_roughness_m = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_leaf_dimension_m") == 0) {
+            model->bb_test.leaf_dimension_m = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_cosz") == 0) {
+            model->bb_test.cosz = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_xl") == 0) {
+            model->bb_test.xl = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_ground_albedo_visible") == 0) {
+            model->bb_test.ground_albedo_visible = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_ground_albedo_nir") == 0) {
+            model->bb_test.ground_albedo_nir = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_leaf_reflectance") == 0) {
+            model->bb_test.leaf_reflectance = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_stem_reflectance") == 0) {
+            model->bb_test.stem_reflectance = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_leaf_transmittance") == 0) {
+            model->bb_test.leaf_transmittance = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_stem_transmittance") == 0) {
+            model->bb_test.stem_transmittance = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_direct_shortwave_fraction") == 0) {
+            model->bb_test.direct_shortwave_fraction = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_visible_shortwave_fraction") == 0) {
+            model->bb_test.visible_shortwave_fraction = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_ground_temperature_offset_k") == 0) {
+            model->bb_test.ground_temperature_offset_k = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_vegetation_emissivity") == 0) {
+            model->bb_test.vegetation_emissivity = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_ground_emissivity") == 0) {
+            model->bb_test.ground_emissivity = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_surface_resistance_s_per_m") == 0) {
+            model->bb_test.surface_resistance_s_per_m = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_co2_mole_fraction") == 0) {
+            model->bb_test.co2_mole_fraction = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_o2_mole_fraction") == 0) {
+            model->bb_test.o2_mole_fraction = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_minimum_wind_speed_m_per_s") == 0) {
+            model->bb_test.minimum_wind_speed_m_per_s = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_bp") == 0) {
+            model->bb_test.bp = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_folnmx") == 0) {
+            model->bb_test.folnmx = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_qe25") == 0) {
+            model->bb_test.qe25 = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_kc25") == 0) {
+            model->bb_test.kc25 = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_akc") == 0) {
+            model->bb_test.akc = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_ko25") == 0) {
+            model->bb_test.ko25 = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_ako") == 0) {
+            model->bb_test.ako = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_avcmx") == 0) {
+            model->bb_test.avcmx = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_c3psn") == 0) {
+            model->bb_test.c3psn = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_maximum_stability_iterations") == 0) {
+            model->bb_test.maximum_stability_iterations = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_maximum_canopy_iterations") == 0) {
+            model->bb_test.maximum_canopy_iterations = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_stability_relative_tolerance") == 0) {
+            model->bb_test.stability_relative_tolerance = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_canopy_temperature_tolerance_k") == 0) {
+            model->bb_test.canopy_temperature_tolerance_k = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_maximum_temperature_step_k") == 0) {
+            model->bb_test.maximum_temperature_step_k = strtod(param_value, NULL);
+            continue;
+        }
+        // Ball-Berry canopy state and physiological parameters.
+        if (strcmp(param_key, "LAI") == 0) {
+            model->bb_canopy.lai = strtod(param_value, NULL);
+            continue;
+        }
 
+        if (strcmp(param_key, "SAI") == 0) {
+            model->bb_canopy.sai = strtod(param_value, NULL);
+            continue;
+        }
+
+        if (strcmp(param_key, "SHDFAC") == 0) {
+            model->bb_canopy.shdfac = strtod(param_value, NULL);
+            continue;
+        }
+
+        if (strcmp(param_key, "CWP") == 0) {
+            model->bb_cwp = strtod(param_value, NULL);
+            continue;
+        }
+
+        if (strcmp(param_key, "MP") == 0) {
+            model->bb_stomata.mp = strtod(param_value, NULL);
+            continue;
+        }
+
+        if (strcmp(param_key, "VCMX25") == 0) {
+            model->bb_stomata.vcmx25 = strtod(param_value, NULL);
+            continue;
+        }
     } // end loop through config
     fclose(fp);
 
@@ -1007,6 +1308,14 @@ static int Get_value_ptr (Bmi *self, const char *name, void **dest)
         return BMI_SUCCESS;
     }
 
+    pet_model *pet = (pet_model *)self->data;
+    if (strcmp(name, "LAI") == 0) { *dest = &pet->bb_canopy.lai; return BMI_SUCCESS; }
+    if (strcmp(name, "SAI") == 0) { *dest = &pet->bb_canopy.sai; return BMI_SUCCESS; }
+    if (strcmp(name, "SHDFAC") == 0) { *dest = &pet->bb_canopy.shdfac; return BMI_SUCCESS; }
+    if (strcmp(name, "CWP") == 0) { *dest = &pet->bb_cwp; return BMI_SUCCESS; }
+    if (strcmp(name, "MP") == 0) { *dest = &pet->bb_stomata.mp; return BMI_SUCCESS; }
+    if (strcmp(name, "VCMX25") == 0) { *dest = &pet->bb_stomata.vcmx25; return BMI_SUCCESS; }
+
     return BMI_FAILURE;
 }
 
@@ -1058,6 +1367,44 @@ static int Get_value(Bmi * self, const char * name, void *dest)
     return BMI_SUCCESS;
 }
 
+/* Validate Ball-Berry state and calibration inputs before changing storage.
+ * The BMI pointer interface also permits direct writes, so method 6 must
+ * validate the complete state again immediately before computing fluxes.
+ */
+static int Set_ball_berry_value(Bmi *self, const char *name, const void *value)
+{
+    if (!self || !self->data || !name || !value) return BMI_FAILURE;
+    pet_model *pet = (pet_model *)self->data;
+    double proposed_value = *(const double *)value;
+    if (!isfinite(proposed_value)) return BMI_FAILURE;
+
+    if (strcmp(name, "LAI") == 0) {
+        if (ball_berry_state_set(&pet->bb_canopy, BB_STATE_LAI, proposed_value) == 0) return BMI_SUCCESS;
+        return BMI_FAILURE;
+    }
+    if (strcmp(name, "SAI") == 0) {
+        if (ball_berry_state_set(&pet->bb_canopy, BB_STATE_SAI, proposed_value) == 0) return BMI_SUCCESS;
+        return BMI_FAILURE;
+    }
+    if (strcmp(name, "SHDFAC") == 0) {
+        if (ball_berry_state_set(&pet->bb_canopy, BB_STATE_SHDFAC, proposed_value) == 0) return BMI_SUCCESS;
+        return BMI_FAILURE;
+    }
+    if (proposed_value < 0.0) return BMI_FAILURE;
+    if (strcmp(name, "CWP") == 0) { pet->bb_cwp = proposed_value; return BMI_SUCCESS; }
+    if (strcmp(name, "MP") == 0) { pet->bb_stomata.mp = proposed_value; return BMI_SUCCESS; }
+    if (strcmp(name, "VCMX25") == 0) { pet->bb_stomata.vcmx25 = proposed_value; return BMI_SUCCESS; }
+    return BMI_FAILURE;
+}
+
+static int Is_ball_berry_input(const char *name)
+{
+    if (strcmp(name, "LAI") == 0 || strcmp(name, "SAI") == 0 ||
+        strcmp(name, "SHDFAC") == 0 || strcmp(name, "CWP") == 0 ||
+        strcmp(name, "MP") == 0 || strcmp(name, "VCMX25") == 0) return 1;
+    return 0;
+}
+
 static int Set_value (Bmi *self, const char *name, void *array)
 {
     void * dest = NULL;
@@ -1074,6 +1421,8 @@ static int Set_value (Bmi *self, const char *name, void *array)
 
     if (self->get_var_nbytes(self, name, &nbytes) == BMI_FAILURE)
         return BMI_FAILURE;
+
+    if (Is_ball_berry_input(name)) return Set_ball_berry_value(self, name, array);
 
     memcpy (dest, array, nbytes);
 
@@ -1100,6 +1449,11 @@ static int Set_value_at_indices (Bmi *self, const char *name, int * inds, int le
 
     if (self->get_var_itemsize(self, name, &itemsize) == BMI_FAILURE)
         return BMI_FAILURE;
+
+    if (Is_ball_berry_input(name)) {
+        if (len == 0) return BMI_SUCCESS;
+        return Set_ball_berry_value(self, name, src);
+    }
 
     { /* Copy the data */
         size_t i;

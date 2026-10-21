@@ -1,6 +1,10 @@
 #ifndef PET_H
 #define PET_H
 
+#include "ball_berry_state.h"
+#include "noahmp_stomata.h"
+#include "ball_berry_helpers.h"
+
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -229,7 +233,60 @@ struct pet_bmi
   int is_forcing_from_bmi;
 };
 
+// Test-only method 6 parameters; production BMI callers supply full canopy forcing.
+typedef struct {
+    double canopy_height_m;
+    double wind_reference_height_m;
+    double displacement_height_m;
+    double momentum_roughness_m;
+    double heat_roughness_m;
+    double ground_momentum_roughness_m;
+    double ground_heat_roughness_m;
+    double leaf_dimension_m;
+    double cosz;
+    double xl;
+    double ground_albedo_visible;
+    double ground_albedo_nir;
+    double leaf_reflectance;
+    double stem_reflectance;
+    double leaf_transmittance;
+    double stem_transmittance;
+    double direct_shortwave_fraction;
+    double visible_shortwave_fraction;
+    double ground_temperature_offset_k;
+    double vegetation_emissivity;
+    double ground_emissivity;
+    double surface_resistance_s_per_m;
+    double co2_mole_fraction;
+    double o2_mole_fraction;
+    double minimum_wind_speed_m_per_s;
+    double bp;
+    double folnmx;
+    double qe25;
+    double kc25;
+    double akc;
+    double ko25;
+    double ako;
+    double avcmx;
+    double c3psn;
+    double maximum_stability_iterations;
+    double maximum_canopy_iterations;
+    double stability_relative_tolerance;
+    double canopy_temperature_tolerance_k;
+    double maximum_temperature_step_k;
+} BallBerryTestParameters;
+
 struct pet_model{
+  BallBerryTestParameters bb_test;
+  BallBerryCanopyState bb_canopy;             // Independent LAI, SAI, and SHDFAC canopy state supplied by NOM or data assimilation.
+  NoahmpStomataParameters bb_stomata;         // Noah-MP stomatal physiology parameters, including Ball-Berry slope MP and VCMX25.
+  double bb_cwp;                              // Dimensionless canopy wind attenuation coefficient, NOM parameter CWPVT.
+  double bb_pot_transpiration_m_per_s;        // Ball-Berry potential canopy transpiration flux [m/s], without root-zone moisture stress.
+  NoahmpStabilityInput bb_stability_input; // Complete explicit method-6 canopy forcing; populated by caller/BMI adapter.
+  int bb_stability_input_ready;           // TRUE only after all required method-6 inputs are populated.
+  int bb_noahmp_compatibility;             // TRUE freezes Ball-Berry stomata after first outer iteration.
+
+
   
   // FLAGS
   int yes_aorc; // if TRUE then using AORC forcing data- if FALSE then we must calculate incoming short/longwave rad.

@@ -5,6 +5,9 @@
 #include "../include/pet.h"
 #include "../include/bmi_pet.h"
 
+// Standalone test-only forcing adapter; not part of the BMI interface.
+extern int bb6_prepare_test_forcing(pet_model *pet);
+
 /************************************************************************
     This main program is a mock framwork.
     This is not part of BMI, but acts as the driver that calls the model.
@@ -38,7 +41,10 @@ int
   ************************************************************************/
 //  printf("Initializeing BMI PET model\n");
   const char *cfg_file_pet = argv[1];
-  pet_bmi_model->initialize(pet_bmi_model, cfg_file_pet);
+  if (pet_bmi_model->initialize(pet_bmi_model, cfg_file_pet) != BMI_SUCCESS) {
+    fprintf(stderr, "PET initialization failed: %s\n", cfg_file_pet);
+    return 1;
+  }
 
   /************************************************************************
       Defining the PET data as a new variable, so we can use its contents
@@ -51,14 +57,27 @@ int
       Defining the PET data as a new variable, so we can use its contents
   ************************************************************************/
 //  printf("Updating PET model\n");
-  pet_bmi_model->update(pet_bmi_model);
+  if (pet->pet_method == 6) {
+    if (bb6_prepare_test_forcing(pet) != 0 ||
+        pet_bmi_model->update(pet_bmi_model) != BMI_SUCCESS) {
+      fprintf(stderr, "Method 6 PET update failed\n");
+      return 1;
+    }
+    printf("potential transpiration (m s-1): %.12e\n", pet->pet_m_per_s);
+  } else if (pet_bmi_model->update(pet_bmi_model) != BMI_SUCCESS) {
+    fprintf(stderr, "PET update failed\n");
+    return 1;
+  }
 
 //  printf("looping through and calling update\n");
   int i=0;
   for (i = 0; i < 1; i++){
     // The unit test only runs one time step.
-    if (pet->bmi.run_unit_tests == 0){
-      pet_bmi_model->update(pet_bmi_model);
+    if (pet->bmi.run_unit_tests == 0 && pet->pet_method != 6){
+      if (pet_bmi_model->update(pet_bmi_model) != BMI_SUCCESS) {
+        fprintf(stderr, "PET update failed\n");
+        return 1;
+      }
       printf("LWDOWN after set value %lf\n", pet->aorc.incoming_longwave_W_per_m2);
       printf("SWDOWN before set value %lf\n", pet->aorc.incoming_shortwave_W_per_m2);
       printf("surface_pressure_Pa %lf \n", pet->aorc.surface_pressure_Pa);
