@@ -5,6 +5,10 @@
 #include "../include/pet.h"
 #include "../include/bmi_pet.h"
 
+// FLO 10/21: PET methods 1 to 5 with forcing read from a file by PET. Method 6 (Ball-Berry) takes
+// its forcing, time and coupling inputs through BMI set_value: use test_ball_berry_method6
+// (main_ball_berry_bmi.c) for it.
+
 /************************************************************************
     This main program is a mock framwork.
     This is not part of BMI, but acts as the driver that calls the model.
@@ -38,7 +42,10 @@ int
   ************************************************************************/
 //  printf("Initializeing BMI PET model\n");
   const char *cfg_file_pet = argv[1];
-  pet_bmi_model->initialize(pet_bmi_model, cfg_file_pet);
+  if (pet_bmi_model->initialize(pet_bmi_model, cfg_file_pet) != BMI_SUCCESS) {
+    fprintf(stderr, "PET initialization failed: %s\n", cfg_file_pet);
+    return 1;
+  }
 
   /************************************************************************
       Defining the PET data as a new variable, so we can use its contents
@@ -51,14 +58,25 @@ int
       Defining the PET data as a new variable, so we can use its contents
   ************************************************************************/
 //  printf("Updating PET model\n");
-  pet_bmi_model->update(pet_bmi_model);
+  if (pet->pet_method == 6) {
+    fprintf(stderr, "PET method 6 needs its forcing through BMI: use test_ball_berry_method6\n");
+    pet_bmi_model->finalize(pet_bmi_model);
+    free(pet_bmi_model);
+    return 1;
+  } else if (pet_bmi_model->update(pet_bmi_model) != BMI_SUCCESS) {
+    fprintf(stderr, "PET update failed\n");
+    return 1;
+  }
 
 //  printf("looping through and calling update\n");
   int i=0;
   for (i = 0; i < 1; i++){
     // The unit test only runs one time step.
-    if (pet->bmi.run_unit_tests == 0){
-      pet_bmi_model->update(pet_bmi_model);
+    if (pet->bmi.run_unit_tests == 0 && pet->pet_method != 6){
+      if (pet_bmi_model->update(pet_bmi_model) != BMI_SUCCESS) {
+        fprintf(stderr, "PET update failed\n");
+        return 1;
+      }
       printf("LWDOWN after set value %lf\n", pet->aorc.incoming_longwave_W_per_m2);
       printf("SWDOWN before set value %lf\n", pet->aorc.incoming_shortwave_W_per_m2);
       printf("surface_pressure_Pa %lf \n", pet->aorc.surface_pressure_Pa);
@@ -73,6 +91,7 @@ int
 
 //  printf("Finalizing models\n");
   pet_bmi_model->finalize(pet_bmi_model);
+  free(pet_bmi_model);   // FLO 10/21: the Bmi struct itself was allocated here
 
   return 0;
 }  /************    END MAIN PROGRAM    ***********************************************/
