@@ -21,7 +21,6 @@ source_directory="./src"
 include_directory="./include"
 executable="./run_bmi_forcings_read"
 method_configuration_files="method_1_radiation_balance.cfg method_2_aerodynamic_method.cfg method_3_combination_method.cfg method_4_priestley_taylor_method.cfg method_5_penman_monteith_method.cfg"
-catchment_configuration_file="${configuration_directory}/pet_config_cat_67.txt"   # method 5, catchment 67 AORC forcing
 
 PET_SOURCES="${source_directory}/pet.c ${source_directory}/bmi_pet.c ${source_directory}/noahmp_stomata.c ${source_directory}/ball_berry_state.c ${source_directory}/ball_berry_helpers.c ${source_directory}/ball_berry_method6_inputs.c"
 
@@ -44,7 +43,5 @@ for method_configuration_file in ${method_configuration_files}; do
     ${executable} "${standalone_configuration}"
 done
 
-echo "=== ${catchment_configuration_file}"
-${executable} "${catchment_configuration_file}"
 echo
-echo "Read-forcing test done: methods 1-5 and catchment 67. Method 6 is BMI only: test/make_and_run_bmi_unit_test.sh"
+echo "Read-forcing test done: methods 1-5. Catchment 67 forcing, all six methods: make_and_run_pass_forcings.sh. Method 6 is BMI only: test/make_and_run_bmi_unit_test.sh"

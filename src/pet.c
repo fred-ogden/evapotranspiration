@@ -421,7 +421,7 @@ void pet_setup(pet_model* model)
 void pet_unit_tests(pet_model* model)
 {
   printf("\n #----------- BEGIN UNIT TESTS   ---------------# \n");
-  printf("\n # Solar calcs assume LAT & LON from ./configs/pet_config_cat_67.txt# \n");
+  printf("\n # Solar calcs assume the unit test site of configs/method_N_*.cfg: latitude 37.865211, longitude -98.12345 # \n");
   printf("\n # And that pet_doy = 208 & pet_zulu_time = 20.567\n");
 
   printf("\n #-----------       UNIT TEST    ---------------# \n");
