@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #ifndef PET_C
 #define PET_C
 
@@ -28,15 +31,140 @@ extern void free_pet_model(pet_model *model) {
 // ######################    RUN    ########    RUN    ########    RUN    ########    RUN    #################################
 // ######################    RUN    ########    RUN    ########    RUN    ########    RUN    #################################
 // ######################    RUN    ########    RUN    ########    RUN    ########    RUN    #################################
+/* FLO 10/21: method 6 diagnostic summary, one "name,value" row per quantity, Noah-MP names.
+ * Written from the model's own state, so a test driver needs only the BMI. */
+static int bb6_write_diagnostic_summary(pet_model *model)
+{
+  FILE *summary_file = fopen(model->bb_diagnostic_summary_file, "w");
+  const NoahmpStabilityOutput *o = &model->bb_last_output;
+  const NoahmpSurradInput *ri = &o->canopy.radiation_stomata.radiation.radiation_inputs;
+  const NoahmpSurradOutput *ro = &o->canopy.radiation_stomata.radiation.radiation;
+  const BallBerryCouplingInputs *ci = &model->bb_coupling_inputs;
+  const BallBerryCouplingOutputs *co = &model->bb_coupling_outputs;
+  if (summary_file == NULL) {
+    fprintf(stderr, "ERROR: cannot open bb_diagnostic_summary_file %s\n", model->bb_diagnostic_summary_file);
+    return -1;
+  }
+  fprintf(summary_file, "noahmp_name,value\n");
+  fprintf(summary_file, "SOLVER,%s\n", model->bb_noahmp_exact_iteration ? "noahmp_exact_iteration" : "nested_picard_newton");
+  fprintf(summary_file, "ITERATIONS,%d\n", o->stability_iterations);
+  fprintf(summary_file, "BTRAN,%.16e\n", ci->root_stress_factor_0_to_1);
+  fprintf(summary_file, "RSURF,%.16e\n", ci->surface_resistance_s_per_m);
+  fprintf(summary_file, "FSNO,%.16e\n", ci->snow_cover_fraction);
+  fprintf(summary_file, "SNOWH,%.16e\n", ci->snow_depth_m);
+  fprintf(summary_file, "FWET,%.16e\n", ci->canopy_wetted_fraction);
+  fprintf(summary_file, "LAI,%.16e\n", model->bb_canopy.lai);
+  fprintf(summary_file, "SAI,%.16e\n", model->bb_canopy.sai);
+  fprintf(summary_file, "ELAI,%.16e\n", ri->elai);
+  fprintf(summary_file, "ESAI,%.16e\n", ri->vai - ri->elai);
+  fprintf(summary_file, "FSUN,%.16e\n", ri->fsun);
+  fprintf(summary_file, "LAISUN,%.16e\n", ri->laisun);
+  fprintf(summary_file, "LAISHA,%.16e\n", ri->laisha);
+  fprintf(summary_file, "PARSUN,%.16e\n", ro->parsun);
+  fprintf(summary_file, "PARSHA,%.16e\n", ro->parsha);
+  fprintf(summary_file, "SAV,%.16e\n", ro->sav);
+  fprintf(summary_file, "SAG,%.16e\n", ro->sag);
+  fprintf(summary_file, "FSR,%.16e\n", ro->fsr);
+  fprintf(summary_file, "RSSUN,%.16e\n", o->canopy.radiation_stomata.sunlit.rs);
+  fprintf(summary_file, "RSSHA,%.16e\n", o->canopy.radiation_stomata.shaded.rs);
+  fprintf(summary_file, "PSNSUN,%.16e\n", o->canopy.radiation_stomata.sunlit.psn);
+  fprintf(summary_file, "PSNSHA,%.16e\n", o->canopy.radiation_stomata.shaded.psn);
+  fprintf(summary_file, "TV,%.16e\n", co->vegetation_temperature_K);
+  fprintf(summary_file, "TAH,%.16e\n", co->canopy_air_temperature_K);
+  fprintf(summary_file, "EAH,%.16e\n", co->canopy_air_vapor_pressure_Pa);
+  fprintf(summary_file, "TG,%.16e\n", o->canopy.foliage.ground_skin_temperature_k);
+  fprintf(summary_file, "CM,%.16e\n", o->surface_layer.cm);
+  fprintf(summary_file, "IRC,%.16e\n", o->canopy.foliage.foliage.net_longwave_w_per_m2);
+  fprintf(summary_file, "SHC,%.16e\n", o->canopy.foliage.foliage.sensible_heat_w_per_m2);
+  fprintf(summary_file, "EVC,%.16e\n", co->canopy_evaporation_heat_flux_W_per_m2);
+  fprintf(summary_file, "TR,%.16e\n", o->canopy.foliage.foliage.transpiration_w_per_m2);
+  fprintf(summary_file, "ETRAN_MM_PER_H,%.16e\n", co->canopy_transpiration_flux_m_per_s * 1000.0 * 3600.0);
+  fprintf(summary_file, "RAHG,%.16e\n", co->below_canopy_aerodynamic_resistance_s_per_m);
+  fprintf(summary_file, "GROUND_LW_ABSORBED,%.16e\n", co->ground_longwave_absorbed_below_canopy_W_per_m2);
+  fclose(summary_file);
+  return 0;
+}
+
 extern int run_pet(pet_model* model)
 {
+  if (model == NULL) return -1;
   if (model->bmi.verbose >2){
     printf("Running the PET model \n");
     printf("model->bmi.is_forcing_from_bmi %d \n", model->bmi.is_forcing_from_bmi);
   }
+  if (model->pet_method == 6) {
+    NoahmpStabilityInput input;
+    NoahmpStabilityOutput output;
+    /* FLO 10/21: build this step's canopy input from the BMI forcing, time and coupling inputs
+     * and the parameters read at Initialize (ball_berry_method6_inputs.c). */
+    if (bb6_build_canopy_input(model) != 0 || model->bb_stability_input_ready != TRUE) {
+      fprintf(stderr, "ERROR: PET method 6 could not build the canopy input for this step.\n");
+      return -1;
+    }
+    input = model->bb_stability_input;
+    if (model->bb_noahmp_compatibility == TRUE) {
+      input.canopy.stomata_update_mode = NOAHMP_STOMATA_REFERENCE_FROZEN;
+    } else {
+      input.canopy.stomata_update_mode = NOAHMP_STOMATA_REEVALUATE;
+    }
+    model->bb_stability_input_ready = FALSE; // Consume forcing even if the solver fails.
+    // FLO 10/20: optional per-iteration trace (written by the exact solver only).
+    input.iteration_trace_stream = NULL;
+    if (model->bb_iteration_trace_file != NULL && model->bb_noahmp_exact_iteration == TRUE) {
+      input.iteration_trace_stream = fopen(model->bb_iteration_trace_file, "w");
+      if (input.iteration_trace_stream == NULL) {
+        fprintf(stderr, "ERROR: cannot open bb_iteration_trace_file %s\n", model->bb_iteration_trace_file);
+        return -1;
+      }
+    }
+    int solver_status;
+    if (model->bb_noahmp_exact_iteration == TRUE) {
+      solver_status = noahmp_vege_flux_exact_solve(&input, &output);   // VEGE_FLUX loop1 replica
+    } else {
+      solver_status = noahmp_stability_coupled_solve(&input, &output); // nested Picard/Newton solver
+    }
+    if (input.iteration_trace_stream != NULL) fclose(input.iteration_trace_stream);
+    if (solver_status != 0) return -1;
+    model->bb_last_output = output;
+
+    // FLO 10/21: BMI coupling outputs. Noah-MP names on the right; see ball_berry_state.h for
+    // the area basis of each. The longwave absorbed by the under-canopy ground is the absorbed
+    // part of Noah-MP's IRG (VEGE_FLUX loop2), evaluated at the final vegetation temperature:
+    //   IRG = EMG*SB*TG**4 - EMG*(1-EMV)*LWDN - EMG*EMV*SB*TV**4   (+ = to atmosphere)
+    {
+      const NoahmpVegeFluxInputs *canopy_inputs = &input.canopy.foliage;
+      const NoahmpVegeFluxOutputs *canopy_fluxes = &output.canopy.foliage.foliage;
+      BallBerryCouplingOutputs *coupling_outputs = &model->bb_coupling_outputs;
+      double TV   = output.canopy.foliage.foliage_temperature_k;                 // vegetation temperature
+      double EMV  = canopy_inputs->vegetation_emissivity;                        // vegetation emissivity
+      double EMG  = canopy_inputs->ground_emissivity;                            // ground emissivity
+      double LWDN = canopy_inputs->incoming_longwave_w_per_m2;                   // downward longwave
+      double stefan_boltzmann_w_per_m2_k4 = canopy_inputs->stefan_boltzmann_w_per_m2_k4; // Noah-MP SB (pet_tools.h #defines SB)
+      coupling_outputs->canopy_transpiration_flux_m_per_s = output.canopy.foliage.transpiration_m_per_s;          // ETRAN
+      coupling_outputs->canopy_evaporation_heat_flux_W_per_m2 = canopy_fluxes->interception_evaporation_w_per_m2; // EVC
+      coupling_outputs->ground_shortwave_absorbed_below_canopy_W_per_m2 =
+          output.canopy.radiation_stomata.radiation.radiation.sag;                                               // SAG
+      coupling_outputs->ground_longwave_absorbed_below_canopy_W_per_m2 =
+          EMG * (1.0 - EMV) * LWDN + EMG * EMV * stefan_boltzmann_w_per_m2_k4 * pow(TV, 4.0);
+      coupling_outputs->canopy_air_temperature_K = canopy_fluxes->canopy_air_temperature_k;                     // TAH
+      coupling_outputs->canopy_air_vapor_pressure_Pa = canopy_fluxes->canopy_air_vapor_pressure_pa;              // EAH
+      coupling_outputs->below_canopy_aerodynamic_resistance_s_per_m =
+          output.ground_canopy.ground_heat_resistance_s_per_m;                                                   // RAHG
+      coupling_outputs->vegetation_temperature_K = TV;                                                           // TV
+    }
+
+    // FLO 10/21: optional diagnostic summary of this update (Noah-MP names), for comparison with
+    // the Fortran NWM Noah-MP reference. Overwritten at each update: it holds the last step.
+    if (model->bb_diagnostic_summary_file != NULL && bb6_write_diagnostic_summary(model) != 0) return -1;
+    model->bb_transpiration_m_per_s = output.canopy.foliage.transpiration_m_per_s;
+    model->pet_m_per_s = model->bb_transpiration_m_per_s;
+    if (model->pet_m_per_s < 0.0) model->pet_m_per_s = 0.0;
+    return 0;
+  }
+  if (model->pet_method < 1 || model->pet_method > 5) return -1;
   if (model->pet_params.zero_plane_displacement_height_m <= 0.0){
     fprintf(stderr, "ERROR: zero_plane_displacement_height_m must be > 0.0 m. Current value: %lf\n", model->pet_params.zero_plane_displacement_height_m);
-    exit(EXIT_FAILURE);
+    return -1;
   }
   // populate the evapotranspiration forcing data structure:
   //---------------------------------------------------------------------------------------------------------------
@@ -49,7 +177,10 @@ extern int run_pet(pet_model* model)
   if (model->bmi.is_forcing_from_bmi == 0){
     model->pet_forcing.air_temperature_C = model->forcing_data_air_temperature_2m_K[model->bmi.current_step] - TK;//convert to C
     model->pet_forcing.relative_humidity_percent     = (double)-99.9; // this negative number means use specific humidity
-    model->pet_forcing.specific_humidity_2m_kg_per_kg = model->forcing_data_precip_kg_per_m2[model->bmi.current_step];
+    /* FLO 10/26: The forcing-file path previously used precipitation as
+     * specific humidity. Read the SPFH field instead (kg/kg).
+     */
+    model->pet_forcing.specific_humidity_2m_kg_per_kg = model->forcing_data_specific_humidity_2m_kg_per_kg[model->bmi.current_step];
     model->pet_forcing.air_pressure_Pa    = model->forcing_data_surface_pressure_Pa[model->bmi.current_step];
     model->pet_forcing.wind_speed_m_per_s = hypot(model->forcing_data_u_wind_speed_10m_m_per_s[model->bmi.current_step],
                                            model->forcing_data_v_wind_speed_10m_m_per_s[model->bmi.current_step]);                 
@@ -70,7 +201,7 @@ extern int run_pet(pet_model* model)
     if(model->pet_params.humidity_measurement_height_m !=2.0)
     {
         fprintf(stderr, "ERROR: humidity measurement height is not 2.0 m. Humidity adjustment not yet implemented. Current value: %lf\n", model->pet_params.humidity_measurement_height_m);
-        exit(EXIT_FAILURE);
+        return -1;
     }
     /* jmframe: If we are getting forcing through BMI, then we don't need this, the forcings should already be in place */
     if (model->bmi.is_forcing_from_bmi == 0){
@@ -103,7 +234,11 @@ extern int run_pet(pet_model* model)
     // Use observed wind speed as 2m value (already warned above)
     // wind_speed_measurement_height_m <= zero_plane_displacement_height_m. Using observed wind speed as 2m value.\n");
   
-    model->pet_params.wind_speed_measurement_height_m=2.0;  // change because we converted from 10m to 2m height.
+    /* FLO 10/26: The original code overwrote the configured measurement
+     * height with 2 m after the first update. That prevented the next
+     * forcing record from receiving its 10 m to 2 m adjustment. Retain
+     * the measurement height and use 2 m only in downstream formulas.
+     */
     // transfer aorc forcing data into our data structure for surface radiation calculations
     model->surf_rad_forcing.incoming_shortwave_radiation_W_per_sq_m = (double)model->aorc.incoming_shortwave_W_per_m2;
     model->surf_rad_forcing.incoming_longwave_radiation_W_per_sq_m  = (double)model->aorc.incoming_longwave_W_per_m2; 

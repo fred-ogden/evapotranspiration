@@ -5,3 +5,9 @@ run_bmi_forcings_read
 z_trash
 test/run_pet_bmi_test
 cmake_build/
+build/
+# compiled test executables start with run; run scripts do not count
+!run*.sh
+test/output/
+noahmp_comparison/build/
+noahmp_comparison/output/

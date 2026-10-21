@@ -43,5 +43,17 @@ jobs:
         git submodule update --init
         ./make_and_run_pass_forcings.sh
         
-    - name: Build and Run BMI Unit Test
+    - name: Build and Run BMI Unit Test, all six methods
       run: cd test && ./make_and_run_bmi_unit_test.sh
+
+    - name: BMI regression and negative tests
+      run: ./test_bmi.sh
+
+    - name: Method 6 against the stored NWM Noah-MP reference
+      run: ./noahmp_comparison/check_C_against_stored_reference.sh
+
+    - name: CMake build and ctest
+      run: |
+        cmake -S . -B cmake_build
+        cmake --build cmake_build
+        cd cmake_build && ctest --output-on-failure

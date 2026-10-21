@@ -1,12 +1,45 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <math.h>
+#include <string.h>
+#include <float.h>
+#include <limits.h>
+#include <ctype.h>
+#include <errno.h>
 #include "../include/pet.h"
 #include "../include/bmi.h"
 #include "../include/bmi_pet.h"
 
-#define INPUT_VAR_NAME_COUNT 7 //
-#define OUTPUT_VAR_NAME_COUNT 1 // water_potential_evaporation_flux; 
+#define INPUT_VAR_NAME_COUNT 31 // FLO 10/21: 7 AORC forcings, 6 Ball-Berry state/parameters, 12 coupling inputs, 6 time inputs
+#define OUTPUT_VAR_NAME_COUNT 9 // FLO 10/21: PET plus 8 Ball-Berry coupling outputs; 
+
+// Remove leading and trailing whitespace from a string in place.
+// Returns a pointer to the first non-whitespace character.
+static char *trim_config_whitespace(char *text)
+{
+    char *end;
+
+    while (isspace((unsigned char)*text)) {
+        text++;
+    }
+
+    if (*text == '\0') {
+        return text;
+    }
+
+    end = text + strlen(text) - 1;
+
+    while (end > text && isspace((unsigned char)*end)) {
+        *end = '\0';
+        end--;
+    }
+
+    return text;
+}
 
 static int 
 Initialize (Bmi *self, const char *cfg_file)
@@ -18,6 +51,26 @@ Initialize (Bmi *self, const char *cfg_file)
     int config_read_result = read_init_config_pet(pet, cfg_file);
     if (config_read_result == BMI_FAILURE)
         return BMI_FAILURE;
+
+    /* FLO 10/21: remember the configuration file name (reported in diagnostics). */
+    free(pet->config_file_path);
+    pet->config_file_path = strdup(cfg_file);
+    if (pet->config_file_path == NULL) return BMI_FAILURE;
+    /* FLO 10/21: method 6 parses its parameters, constants and the initial values of its BMI
+     * input variables from this same file, once, here (ball_berry_method6_inputs.c). Its
+     * forcing, time and coupling inputs then come through BMI set_value before each update,
+     * so method 6 requires forcing_file = BMI. */
+    if (pet->pet_method == 6) {
+        if (pet->bmi.is_forcing_from_bmi != 1) {
+            fprintf(stderr, "PET method 6 requires forcing_file = BMI: the driver sets the forcing "
+                            "and time with set_value (configuration %s)\n", cfg_file);
+            return BMI_FAILURE;
+        }
+        if (bb6_initialize_from_configuration(pet, cfg_file) != 0) {
+            fprintf(stderr, "PET method 6: invalid configuration in %s\n", cfg_file);
+            return BMI_FAILURE;
+        }
+    }
 
     pet_setup(pet);
 
@@ -45,7 +98,7 @@ Initialize (Bmi *self, const char *cfg_file)
             printf("Configured forcing file '%s' could not be opened for reading\n", pet->forcing_file);
             return BMI_FAILURE;
         }
-        if (forcing_line_count == 1) {
+        if (forcing_line_count <= 1 || pet->bmi.num_timesteps > forcing_line_count - 1) {
             printf("Invalid header-only forcing file '%s'\n", pet->forcing_file);
             return BMI_FAILURE;
         }
@@ -62,6 +115,13 @@ Initialize (Bmi *self, const char *cfg_file)
         pet->forcing_data_v_wind_speed_10m_m_per_s = malloc(sizeof(double) * (pet->bmi.num_timesteps + 1));
     
         // Now open it again to read the forcings
+        if (!pet->forcing_data_precip_kg_per_m2 || !pet->forcing_data_surface_pressure_Pa ||
+            !pet->forcing_data_time || !pet->forcing_data_incoming_shortwave_W_per_m2 ||
+            !pet->forcing_data_incoming_longwave_W_per_m2 ||
+            !pet->forcing_data_specific_humidity_2m_kg_per_kg ||
+            !pet->forcing_data_air_temperature_2m_K ||
+            !pet->forcing_data_u_wind_speed_10m_m_per_s ||
+            !pet->forcing_data_v_wind_speed_10m_m_per_s) return BMI_FAILURE;
         FILE* ffp = fopen(pet->forcing_file, "r");
         // Ensure still exists
         if (ffp == NULL) {
@@ -76,8 +136,7 @@ Initialize (Bmi *self, const char *cfg_file)
         char* ret = NULL;
         // First read the header line
         ret = fgets(line_str, max_forcing_line_length + 1, ffp);
-        if (ret == NULL)
-            return BMI_FAILURE;
+        if (ret == NULL) { fclose(ffp); return BMI_FAILURE; }
 
         if (pet->bmi.verbose > 2) 
             printf("the number of time steps from the forcing file is: %8.6e \n", (double)pet->bmi.num_timesteps);
@@ -85,8 +144,7 @@ Initialize (Bmi *self, const char *cfg_file)
         aorc_forcing_data_pet forcings;
         for (int i = 0; i < pet->bmi.num_timesteps; i++) {
             ret = fgets(line_str, max_forcing_line_length + 1, ffp);  // read in a line of AORC data.
-            if (ret == NULL)
-                return BMI_FAILURE;
+            if (ret == NULL) { fclose(ffp); return BMI_FAILURE; }
             parse_aorc_line_pet(line_str, &year, &month, &day, &hour, &minute, &dsec, &forcings);
             pet->forcing_data_precip_kg_per_m2[i] = forcings.precip_kg_per_m2 * ((double)pet->bmi.time_step_size_s);
             if (pet->bmi.verbose >4)
@@ -134,10 +192,16 @@ Update (Bmi *self)
 {
     pet_model *pet = (pet_model *) self->data;
   
+    if (!pet) return BMI_FAILURE;
     if (pet->bmi.verbose >1)
       printf("BMI Update PET ...\n");
   
-    run_pet(pet);
+    if (pet == NULL || pet->bmi.time_step_size_s <= 0.0 ||
+        (pet->bmi.is_forcing_from_bmi == 0 &&
+         pet->bmi.current_step >= pet->bmi.num_timesteps))
+        return BMI_FAILURE;
+    if (run_pet(pet) != 0)
+        return BMI_FAILURE;
 
     pet->bmi.current_time_step += pet->bmi.time_step_size_s; // Seconds since start of run
     pet->bmi.current_step +=1;                            // time steps since start of run
@@ -161,30 +225,24 @@ Update_until (Bmi *self, double t)
 
     if(self->get_time_step (self, &dt) == BMI_FAILURE)
         return BMI_FAILURE;
-    if(dt == 0.0)
+    if(dt <= 0.0 || !isfinite(t))
         return BMI_FAILURE;
     if(self->get_current_time(self, &now) == BMI_FAILURE)
         return BMI_FAILURE;    
 
-    {
-    
-    int n;
-    double frac;
-    const double n_steps = (t - now) / dt;
-    for (n=0; n<(int)n_steps; n++) {
-        Update (self);
-    }
-    frac = n_steps - (int)n_steps;
-    if (frac > 0){
-        printf("WARNING: PET trying to update a fraction of a timestep\n");
-        
-        // change timestep to remaining fraction & call update()
-        pet->bmi.time_step_size_s = frac * dt;
-        Update (self);
-        pet->bmi.time_step_size_s = dt;
-    }
-
-    }
+    if (t < now || (pet->bmi.is_forcing_from_bmi == 0 &&
+        t > pet->bmi.num_timesteps * dt)) return BMI_FAILURE;
+    /* FLO 10/26: A fractional Update previously advanced current_step by
+     * one whole forcing record while advancing time by only a fraction.
+     * Reject fractional requests until forcing interpolation is defined.
+     */
+    double steps = (t - now) / dt;
+    double rounded_steps = nearbyint(steps);
+    if (fabs(steps - rounded_steps) > 1.0e-9 ||
+        rounded_steps < 0.0 || rounded_steps > (double)INT_MAX)
+        return BMI_FAILURE;
+    for (int n = 0; n < (int)rounded_steps; ++n)
+        if (Update(self) != BMI_SUCCESS) return BMI_FAILURE;
 
   return BMI_SUCCESS;
 }
@@ -335,25 +393,35 @@ pet_model *
 new_bmi_pet()
 {
     pet_model *data;
-    data = (pet_model*) malloc(sizeof(pet_model));
+    data = (pet_model*) calloc(1, sizeof(pet_model));
 
     return data;
 }
 
-static int 
+static int
 Finalize (Bmi *self)
 {
-
-  // Perform Unit Tests, if set in config file.
-  pet_model *pet = (pet_model *) self->data;
-  if (pet->bmi.run_unit_tests == 1)
-    pet_unit_tests(pet);
-
-  if (self){
-    pet_model* model = (pet_model *)(self->data);
-    self->data = (void*)new_bmi_pet();
-  }
-  return BMI_SUCCESS;
+    if (self == NULL || self->data == NULL)
+        return BMI_FAILURE;
+    pet_model *pet = (pet_model *)self->data;
+    if (pet->bmi.run_unit_tests == 1)
+        pet_unit_tests(pet);
+    free(pet->forcing_file);
+    free(pet->config_file_path);           // FLO 10/21
+    free(pet->bb_iteration_trace_file);    // FLO 10/20
+    free(pet->bb_diagnostic_summary_file); // FLO 10/21
+    free(pet->forcing_data_precip_kg_per_m2);
+    free(pet->forcing_data_surface_pressure_Pa);
+    free(pet->forcing_data_time);
+    free(pet->forcing_data_incoming_shortwave_W_per_m2);
+    free(pet->forcing_data_incoming_longwave_W_per_m2);
+    free(pet->forcing_data_specific_humidity_2m_kg_per_kg);
+    free(pet->forcing_data_air_temperature_2m_K);
+    free(pet->forcing_data_u_wind_speed_10m_m_per_s);
+    free(pet->forcing_data_v_wind_speed_10m_m_per_s);
+    free(pet);
+    self->data = NULL;
+    return BMI_SUCCESS;
 }
 
 //---------------------------------------------------------------------------------------------------------------------
@@ -362,71 +430,192 @@ Get_start_time (Bmi *self, double * time)
 {
     // TODO: Get the real starting time, not zero. 
     // jmframe: I think this should be the time of the first line in the forcing file. In seconds since 1970
-    *time = 0.0;
+    if (!self || !self->data || !time) return BMI_FAILURE;
+    *time = 0.0; /* BMI simulation-relative seconds */
     return BMI_SUCCESS;
 }
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *output_var_names[OUTPUT_VAR_NAME_COUNT] = {
-  "water_potential_evaporation_flux",
+    "water_potential_evaporation_flux",
+    "canopy_transpiration_flux_m_per_s",
+    "canopy_evaporation_heat_flux_W_per_m2",
+    "ground_shortwave_absorbed_below_canopy_W_per_m2",
+    "ground_longwave_absorbed_below_canopy_W_per_m2",
+    "canopy_air_temperature_K",
+    "canopy_air_vapor_pressure_Pa",
+    "below_canopy_aerodynamic_resistance_s_per_m",
+    "vegetation_temperature_K"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *output_var_types[OUTPUT_VAR_NAME_COUNT] = {
-  "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const int output_var_item_count[OUTPUT_VAR_NAME_COUNT] = {
-  1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *output_var_units[OUTPUT_VAR_NAME_COUNT] = {
-  "m s-1",
+    "m s-1",
+    "m s-1",
+    "W m-2",
+    "W m-2",
+    "W m-2",
+    "K",
+    "Pa",
+    "s m-1",
+    "K"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const int output_var_grids[OUTPUT_VAR_NAME_COUNT] = {
-        0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *output_var_locations[OUTPUT_VAR_NAME_COUNT] = {
-        "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const int input_var_item_count[INPUT_VAR_NAME_COUNT] = {
-  1,
-  1,
-  1,
-  1,
-  1,
-  1,
-  1
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char input_var_grids[INPUT_VAR_NAME_COUNT] = {
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *input_var_locations[INPUT_VAR_NAME_COUNT] = {
-        "node",
-        "node",
-        "node",
-        "node",
-        "node",
-        "node",
-        "node"
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node"
 };
 
 
@@ -438,67 +627,149 @@ static const char *input_var_locations[INPUT_VAR_NAME_COUNT] = {
 static const char *input_var_names[INPUT_VAR_NAME_COUNT] = {
     "land_surface_radiation~incoming~longwave__energy_flux",
     "land_surface_air__pressure",
-    "atmosphere_air_water~vapor__relative_saturation",
+    "atmosphere_air_water~vapor__specific_humidity",
     "land_surface_radiation~incoming~shortwave__energy_flux",
     "land_surface_air__temperature",
     "land_surface_wind__x_component_of_velocity",
-    "land_surface_wind__y_component_of_velocity"
+    "land_surface_wind__y_component_of_velocity",
+    "LAI",
+    "SAI",
+    "SHDFAC",
+    "CWP",
+    "MP",
+    "VCMX25",
+    "root_stress_factor_0_to_1",
+    "ground_skin_temperature_K",
+    "surface_resistance_s_per_m",
+    "snow_cover_fraction",
+    "snow_depth_m",
+    "snow_albedo_direct_visible",
+    "snow_albedo_direct_nir",
+    "snow_albedo_diffuse_visible",
+    "snow_albedo_diffuse_nir",
+    "canopy_wetted_fraction",
+    "canopy_liquid_water_mm",
+    "canopy_ice_mm",
+    "time_year",
+    "time_month",
+    "time_day_of_month",
+    "time_hour",
+    "time_minute",
+    "time_second"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *input_var_types[INPUT_VAR_NAME_COUNT] = {
-  "double",
-  "double",
-  "double",
-  "double",
-  "double",
-  "double",
-  "double"
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *input_var_units[INPUT_VAR_NAME_COUNT] = {
-  "W m-2",
-  "Pa",
-  "kg kg-1",
-  "W m-2",
-  "K",
-  "m s-1",
-  "m s-1"
+    "W m-2",
+    "Pa",
+    "kg kg-1",
+    "W m-2",
+    "K",
+    "m s-1",
+    "m s-1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "umol CO2 m-2 s-1",
+    "1",
+    "K",
+    "s m-1",
+    "1",
+    "m",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "mm",
+    "mm",
+    "year",
+    "month",
+    "d",
+    "h",
+    "min",
+    "s"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
+/* FLO 10/21: the variables an instance exposes depend on its method. Methods 1-5 expose the
+ * seven AORC forcing inputs and the one PET output, as before method 6 existed. Method 6 also
+ * exposes the Ball-Berry inputs (vegetation state, coupling, time) and its eight coupling outputs.
+ * The tables above list the methods 1-5 variables first, so an instance uses the first
+ * active_*_variable_count entries. Before initialize, the methods 1-5 set is reported. */
+#define METHODS_1_TO_5_INPUT_VARIABLE_COUNT 7
+#define METHODS_1_TO_5_OUTPUT_VARIABLE_COUNT 1
 
-static int Get_end_time (Bmi *self, double * time)
+static int active_input_variable_count(Bmi *self)
 {
-/*  
-  Get_start_time(self, time);
-
-  *time += (((pet_model *) self->data)->bmi.num_timesteps * 
-            ((pet_model *) self->data)->bmi.time_step_size_s);
-
-  return BMI_SUCCESS;*/
-
-    // JG EDIT
-    pet_model *pet;
-    pet = (pet_model *) self->data;
-    Get_start_time(self, time);
-    
-    // see if numsteps is set via config
-    if (pet->bmi.num_timesteps == 1){
-        // if ==1 (not really defined) set to FLT_MAX macro via float.h
-        // See https://bmi.readthedocs.io/en/latest/#get-end-time
-        *time += FLT_MAX;
-        return BMI_SUCCESS;
-    }
-    else {
-        // otherwise, set via numsteps
-        *time += pet->bmi.num_timesteps * pet->bmi.time_step_size_s;
-        return BMI_SUCCESS;
-    }
-    
+    if (self && self->data && ((pet_model *)self->data)->pet_method == 6) return INPUT_VAR_NAME_COUNT;
+    return METHODS_1_TO_5_INPUT_VARIABLE_COUNT;
 }
 
+static int active_output_variable_count(Bmi *self)
+{
+    if (self && self->data && ((pet_model *)self->data)->pet_method == 6) return OUTPUT_VAR_NAME_COUNT;
+    return METHODS_1_TO_5_OUTPUT_VARIABLE_COUNT;
+}
+
+static int is_active_variable(Bmi *self, const char *name)
+{
+    for (int i = 0; i < active_input_variable_count(self); ++i)
+        if (strcmp(name, input_var_names[i]) == 0) return 1;
+    for (int i = 0; i < active_output_variable_count(self); ++i)
+        if (strcmp(name, output_var_names[i]) == 0) return 1;
+    return 0;
+}
+
+
+//---------------------------------------------------------------------------------------------------------------------
+
+static int Get_end_time (Bmi *self, double *time)
+{
+    if (!self || !self->data || !time) return BMI_FAILURE;
+    pet_model *pet = (pet_model *)self->data;
+    if (pet->bmi.num_timesteps < 0 || pet->bmi.time_step_size_s <= 0.0)
+        return BMI_FAILURE;
+    *time = pet->bmi.num_timesteps * pet->bmi.time_step_size_s;
+    return BMI_SUCCESS;
+}
 
 //---------------------------------------------------------------------------------------------------------------------
 
@@ -522,8 +793,7 @@ static int Get_current_time (Bmi *self, double * time)
     if (((pet_model *) self->data)->bmi.verbose > 2){
         printf("Current model time step: '%8.6e'\n", ((pet_model *) self->data)->bmi.current_time_step);
     }
-    *time += (((pet_model *) self->data)->bmi.current_step * 
-              ((pet_model *) self->data)->bmi.time_step_size_s);
+    *time += ((pet_model *)self->data)->bmi.current_time_step;
     return BMI_SUCCESS;
 } // end Get_current_time
 
@@ -597,6 +867,7 @@ int read_file_line_counts_pet(const char* file_name, int* line_count, int* max_l
 //---------------------------------------------------------------------------------------------------------------------
 int read_init_config_pet(pet_model* model, const char* config_file)//,
 {
+    if (!model || !config_file) return BMI_FAILURE;
     int config_line_count, max_config_line_length;
     // Note that this determines max line length including the ending return character, if present
     int count_result = read_file_line_counts_pet(config_file, &config_line_count, &max_config_line_length);
@@ -615,15 +886,89 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
     char config_line[max_config_line_length + 1];
 
     for (int i = 0; i < config_line_count; i++) {
-        char *param_key, *param_value;
-        ret = fgets(config_line, max_config_line_length + 1, fp);
-        if (ret == NULL)
-            return BMI_FAILURE;
-        char* config_line_ptr = config_line;
-        config_line_ptr = strsep(&config_line_ptr, "\n");
-        param_key = strsep(&config_line_ptr, "=");
-        param_value = strsep(&config_line_ptr, "=");
+        char *param_key;
+        char *param_value;
+        char *equals;
+        char *comment;
+        char *units;
 
+        ret = fgets(config_line, max_config_line_length + 1, fp);
+        if (ret == NULL) {
+            fclose(fp);
+            return BMI_FAILURE;
+        }
+
+        // Remove comments, including comments following a parameter.
+        comment = strchr(config_line, '#');
+        if (comment != NULL) {
+            *comment = '\0';
+        }
+
+        // Ignore blank lines and full-line comments.
+        param_key = trim_config_whitespace(config_line);
+        if (*param_key == '\0') {
+            continue;
+        }
+
+        // Split the parameter name and value at the first equals sign.
+        equals = strchr(param_key, '=');
+        if (equals == NULL) {
+            fprintf(stderr, "Invalid PET configuration line: %s\n", param_key);
+            fclose(fp);
+            return BMI_FAILURE;
+        }
+
+        *equals = '\0';
+
+        param_value = trim_config_whitespace(equals + 1);
+        param_key = trim_config_whitespace(param_key);
+
+        if (*param_key == '\0' || *param_value == '\0') {
+            fprintf(stderr, "Missing PET configuration key or value\n");
+            fclose(fp);
+            return BMI_FAILURE;
+        }
+
+        // Remove optional trailing units annotations, e.g. 3600 [s].
+        // Units are documentation; no unit conversion is performed.
+        if (strcmp(param_key, "forcing_file") != 0 && strcmp(param_key, "bb_iteration_trace_file") != 0 && strcmp(param_key, "bb_diagnostic_summary_file") != 0 && strcmp(param_key, "forcing_csv_file") != 0) {   // FLO 10/20: string-valued keys keep their text
+            units = strchr(param_value, '[');
+
+            if (units != NULL) {
+                char *units_end = strchr(units, ']');
+
+                if (units_end == NULL ||
+                    *trim_config_whitespace(units_end + 1) != '\0') {
+                    fprintf(stderr, "Invalid units annotation for %s\n", param_key);
+                    fclose(fp);
+                    return BMI_FAILURE;
+                }
+
+                *units = '\0';
+                param_value = trim_config_whitespace(param_value);
+
+                if (*param_value == '\0') {
+                    fclose(fp);
+                    return BMI_FAILURE;
+                }
+            }
+        }
+        /* FLO 10/26: strtod(..., NULL) silently accepted malformed numeric
+         * settings as zero. Validate every numeric configuration value before
+         * assigning it, while leaving the forcing_file string untouched.
+         */
+        if (strcmp(param_key, "forcing_file") != 0 && strcmp(param_key, "bb_iteration_trace_file") != 0 && strcmp(param_key, "bb_diagnostic_summary_file") != 0 && strcmp(param_key, "forcing_csv_file") != 0 && strcmp(param_key, "cloud_base_height_known") != 0) {
+            char *end = NULL;
+            errno = 0;
+            double parsed_value = strtod(param_value, &end);
+            while (end && isspace((unsigned char)*end)) ++end;
+            if (errno == ERANGE || !isfinite(parsed_value) || end == param_value || !end || *end != '\0') {
+                fprintf(stderr, "Invalid PET configuration value for %s: %s\n",
+                        param_key, param_value);
+                fclose(fp);
+                return BMI_FAILURE;
+            }
+        }
         if (strcmp(param_key, "verbose") == 0){
             model->bmi.verbose = strtod(param_value, NULL);
             if(model->bmi.verbose > 1){
@@ -649,8 +994,31 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
             }
             continue;
         }
+        // FLO 10/20: method 6 solver selection and test-only file names.
+        if (strcmp(param_key, "bb_noahmp_compatibility") == 0) {
+            model->bb_noahmp_compatibility = (int)strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_noahmp_exact_iteration") == 0) {
+            model->bb_noahmp_exact_iteration = (int)strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_diagnostic_summary_file") == 0) {   // FLO 10/21
+            free(model->bb_diagnostic_summary_file);
+            model->bb_diagnostic_summary_file = strdup(param_value);
+            if (!model->bb_diagnostic_summary_file) { fclose(fp); return BMI_FAILURE; }
+            continue;
+        }
+        if (strcmp(param_key, "bb_iteration_trace_file") == 0) {
+            free(model->bb_iteration_trace_file);
+            model->bb_iteration_trace_file = strdup(param_value);
+            if (!model->bb_iteration_trace_file) { fclose(fp); return BMI_FAILURE; }
+            continue;
+        }
         if (strcmp(param_key, "forcing_file") == 0) {
+            free(model->forcing_file);
             model->forcing_file = strdup(param_value);
+            if (!model->forcing_file) { fclose(fp); return BMI_FAILURE; }
             if (strcmp(model->forcing_file,"BMI") == 0){
                 if(model->bmi.verbose >=2)
                     printf("in pet_setup: Getting forcing values from BMI. Not reading in forcing from file. \n");
@@ -734,14 +1102,9 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
             }
             continue;
         }
-        if (strcmp(param_key, "surface_shortwave_albedo") == 0) {
-            model->surf_rad_params.surface_shortwave_albedo = strtod(param_value, NULL);
-            if(model->bmi.verbose >=2){
-                printf("surface_shortwave_albedo from config file \n");
-                printf("%lf\n", model->surf_rad_params.surface_shortwave_albedo);
-            }
-            continue;
-        }
+        /* FLO 10/26: Removed a duplicate albedo configuration branch;
+         * the first branch already handles this parameter.
+         */
         if (strcmp(param_key, "latitude_degrees") == 0) {
             model->solar_params.latitude_degrees = strtod(param_value, NULL);
             if(model->bmi.verbose >=2){
@@ -770,6 +1133,8 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
             model->bmi.time_step_size_s = strtod(param_value, NULL);
             if(model->bmi.verbose >=2){
                 printf("time_step_size_s from config file \n");
+                /* FLO 10/26: time_step_size_s is an int; passing it to %g
+                 * invokes undefined behavior. Use the matching integer format. */
                 printf("%d\n", model->bmi.time_step_size_s);
             }
             continue;
@@ -789,9 +1154,41 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
             }
             continue;
         }
-
+        // Method 6 standalone test parameters.
+        /* FLO 10/21: method 6 physics inputs (geometry, optics, physiology, LAI, SAI,
+         * SHDFAC, CWP, MP, VCMX25 initial values) are now read from this same file by
+         * ball_berry_reference_config.c, using the key names shared with the Fortran
+         * Noah-MP reference. The former bb_* physics keys and the LAI/SAI/SHDFAC/CWP/MP/
+         * VCMX25 config keys were removed; those six remain BMI input variables.
+         * Only the nested-solver controls are read here. */
+        if (strcmp(param_key, "bb_maximum_stability_iterations") == 0) {
+            model->bb_solver.maximum_stability_iterations = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_maximum_canopy_iterations") == 0) {
+            model->bb_solver.maximum_canopy_iterations = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_stability_relative_tolerance") == 0) {
+            model->bb_solver.stability_relative_tolerance = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_canopy_temperature_tolerance_k") == 0) {
+            model->bb_solver.canopy_temperature_tolerance_k = strtod(param_value, NULL);
+            continue;
+        }
+        if (strcmp(param_key, "bb_maximum_temperature_step_k") == 0) {
+            model->bb_solver.maximum_temperature_step_k = strtod(param_value, NULL);
+            continue;
+        }
     } // end loop through config
     fclose(fp);
+
+    /* FLO 10/26: Reject invalid timestep and forcing count at initialization
+     * rather than allowing a later divide-by-zero or invalid allocation.
+     */
+    if (model->bmi.time_step_size_s <= 0 ||
+        model->bmi.num_timesteps < 0) return BMI_FAILURE;
 
     // Validate parameters here if needed
     if (model->pet_params.zero_plane_displacement_height_m <= 0.0){
@@ -806,14 +1203,14 @@ int read_init_config_pet(pet_model* model, const char* config_file)//,
 static int Get_var_type (Bmi *self, const char *name, char * type)
 {
     // Check to see if in output array first
-    for (int i = 0; i < OUTPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_output_variable_count(self); i++) {
         if (strcmp(name, output_var_names[i]) == 0) {
             strncpy(type, output_var_types[i], BMI_MAX_TYPE_NAME);
             return BMI_SUCCESS;
         }
     }
     // Then check to see if in input array
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_input_variable_count(self); i++) {
         if (strcmp(name, input_var_names[i]) == 0) {
             strncpy(type, input_var_types[i], BMI_MAX_TYPE_NAME);
             return BMI_SUCCESS;
@@ -866,14 +1263,14 @@ static int Get_var_itemsize (Bmi *self, const char *name, int * size)
 static int Get_var_location (Bmi *self, const char *name, char * location)
 {
     // Check to see if in output array first
-    for (int i = 0; i < OUTPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_output_variable_count(self); i++) {
         if (strcmp(name, output_var_names[i]) == 0) {
             strncpy(location, output_var_locations[i], BMI_MAX_LOCATION_NAME);
             return BMI_SUCCESS;
         }
     }
     // Then check to see if in input array
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_input_variable_count(self); i++) {
         if (strcmp(name, input_var_names[i]) == 0) {
             strncpy(location, input_var_locations[i], BMI_MAX_LOCATION_NAME);
             return BMI_SUCCESS;
@@ -889,14 +1286,14 @@ static int Get_var_grid(Bmi *self, const char *name, int *grid)
 {
 
     // Check to see if in output array first
-    for (int i = 0; i < OUTPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_output_variable_count(self); i++) {
         if (strcmp(name, output_var_names[i]) == 0) {
             *grid = output_var_grids[i];
             return BMI_SUCCESS;
         }
     }
     // Then check to see if in input array
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_input_variable_count(self); i++) {
         if (strcmp(name, input_var_names[i]) == 0) {
             *grid = input_var_grids[i];
             return BMI_SUCCESS;
@@ -912,6 +1309,12 @@ static int Get_var_grid(Bmi *self, const char *name, int *grid)
 // ***********************************************************
 static int Get_value_ptr (Bmi *self, const char *name, void **dest)
 {
+    /* FLO 10/26: BMI callers may supply null arguments; avoid strcmp and
+     * dereference on invalid pointers.
+     */
+    if (!self || !self->data || !name || !dest) return BMI_FAILURE;
+    *dest = NULL;
+    if (!is_active_variable(self, name)) return BMI_FAILURE;   // FLO 10/21: method 6 variables only for method 6
     void *src = NULL;
     /***********************************************************/
     /***********    OUTPUT   ***********************************/
@@ -948,7 +1351,7 @@ static int Get_value_ptr (Bmi *self, const char *name, void **dest)
         *dest = src;
         return BMI_SUCCESS;
     }
-    if (strcmp (name, "atmosphere_air_water~vapor__relative_saturation") == 0) {
+    if (strcmp (name, "atmosphere_air_water~vapor__specific_humidity") == 0) {
         pet_model *pet;
         pet = (pet_model *) self->data;
         src = (void*)&pet->aorc.specific_humidity_2m_kg_per_kg;
@@ -977,6 +1380,49 @@ static int Get_value_ptr (Bmi *self, const char *name, void **dest)
         return BMI_SUCCESS;
     }
 
+    pet_model *pet = (pet_model *)self->data;
+    if (strcmp(name, "LAI") == 0) { *dest = &pet->bb_canopy.lai; return BMI_SUCCESS; }
+    if (strcmp(name, "SAI") == 0) { *dest = &pet->bb_canopy.sai; return BMI_SUCCESS; }
+    if (strcmp(name, "SHDFAC") == 0) { *dest = &pet->bb_canopy.shdfac; return BMI_SUCCESS; }
+    if (strcmp(name, "CWP") == 0) { *dest = &pet->bb_cwp; return BMI_SUCCESS; }
+    if (strcmp(name, "MP") == 0) { *dest = &pet->bb_stomata.mp; return BMI_SUCCESS; }
+    if (strcmp(name, "VCMX25") == 0) { *dest = &pet->bb_stomata.vcmx25; return BMI_SUCCESS; }
+
+    /* FLO 10/21: Ball-Berry (method 6) coupling inputs [Noah-MP name] */
+    BallBerryCouplingInputs *coupling = &pet->bb_coupling_inputs;
+    if (strcmp(name, "root_stress_factor_0_to_1") == 0) { *dest = &coupling->root_stress_factor_0_to_1; return BMI_SUCCESS; }     /* BTRAN */
+    if (strcmp(name, "ground_skin_temperature_K") == 0) { *dest = &coupling->ground_skin_temperature_K; return BMI_SUCCESS; }     /* TG */
+    if (strcmp(name, "surface_resistance_s_per_m") == 0) { *dest = &coupling->surface_resistance_s_per_m; return BMI_SUCCESS; }   /* RSURF */
+    if (strcmp(name, "snow_cover_fraction") == 0) { *dest = &coupling->snow_cover_fraction; return BMI_SUCCESS; }                 /* FSNO */
+    if (strcmp(name, "snow_depth_m") == 0) { *dest = &coupling->snow_depth_m; return BMI_SUCCESS; }                               /* SNOWH */
+    if (strcmp(name, "snow_albedo_direct_visible") == 0) { *dest = &coupling->snow_albedo_direct_visible; return BMI_SUCCESS; }   /* ALBSND(1) */
+    if (strcmp(name, "snow_albedo_direct_nir") == 0) { *dest = &coupling->snow_albedo_direct_nir; return BMI_SUCCESS; }           /* ALBSND(2) */
+    if (strcmp(name, "snow_albedo_diffuse_visible") == 0) { *dest = &coupling->snow_albedo_diffuse_visible; return BMI_SUCCESS; } /* ALBSNI(1) */
+    if (strcmp(name, "snow_albedo_diffuse_nir") == 0) { *dest = &coupling->snow_albedo_diffuse_nir; return BMI_SUCCESS; }         /* ALBSNI(2) */
+    if (strcmp(name, "canopy_wetted_fraction") == 0) { *dest = &coupling->canopy_wetted_fraction; return BMI_SUCCESS; }           /* FWET */
+    if (strcmp(name, "canopy_liquid_water_mm") == 0) { *dest = &coupling->canopy_liquid_water_mm; return BMI_SUCCESS; }           /* CANLIQ */
+    if (strcmp(name, "canopy_ice_mm") == 0) { *dest = &coupling->canopy_ice_mm; return BMI_SUCCESS; }                             /* CANICE */
+
+    /* FLO 10/21: method 6 time inputs, UTC at the start of the step */
+    BallBerryTimeInputs *time_inputs = &pet->bb_time_inputs;
+    if (strcmp(name, "time_year") == 0) { *dest = &time_inputs->time_year; return BMI_SUCCESS; }
+    if (strcmp(name, "time_month") == 0) { *dest = &time_inputs->time_month; return BMI_SUCCESS; }
+    if (strcmp(name, "time_day_of_month") == 0) { *dest = &time_inputs->time_day_of_month; return BMI_SUCCESS; }
+    if (strcmp(name, "time_hour") == 0) { *dest = &time_inputs->time_hour; return BMI_SUCCESS; }
+    if (strcmp(name, "time_minute") == 0) { *dest = &time_inputs->time_minute; return BMI_SUCCESS; }
+    if (strcmp(name, "time_second") == 0) { *dest = &time_inputs->time_second; return BMI_SUCCESS; }
+
+    /* FLO 10/21: Ball-Berry (method 6) coupling outputs [Noah-MP name] */
+    BallBerryCouplingOutputs *coupling_outputs = &pet->bb_coupling_outputs;
+    if (strcmp(name, "canopy_transpiration_flux_m_per_s") == 0) { *dest = &coupling_outputs->canopy_transpiration_flux_m_per_s; return BMI_SUCCESS; }  /* ETRAN */
+    if (strcmp(name, "canopy_evaporation_heat_flux_W_per_m2") == 0) { *dest = &coupling_outputs->canopy_evaporation_heat_flux_W_per_m2; return BMI_SUCCESS; } /* EVC */
+    if (strcmp(name, "ground_shortwave_absorbed_below_canopy_W_per_m2") == 0) { *dest = &coupling_outputs->ground_shortwave_absorbed_below_canopy_W_per_m2; return BMI_SUCCESS; } /* SAG */
+    if (strcmp(name, "ground_longwave_absorbed_below_canopy_W_per_m2") == 0) { *dest = &coupling_outputs->ground_longwave_absorbed_below_canopy_W_per_m2; return BMI_SUCCESS; }
+    if (strcmp(name, "canopy_air_temperature_K") == 0) { *dest = &coupling_outputs->canopy_air_temperature_K; return BMI_SUCCESS; }          /* TAH */
+    if (strcmp(name, "canopy_air_vapor_pressure_Pa") == 0) { *dest = &coupling_outputs->canopy_air_vapor_pressure_Pa; return BMI_SUCCESS; }  /* EAH */
+    if (strcmp(name, "below_canopy_aerodynamic_resistance_s_per_m") == 0) { *dest = &coupling_outputs->below_canopy_aerodynamic_resistance_s_per_m; return BMI_SUCCESS; } /* RAHG */
+    if (strcmp(name, "vegetation_temperature_K") == 0) { *dest = &coupling_outputs->vegetation_temperature_K; return BMI_SUCCESS; }          /* TV */
+
     return BMI_FAILURE;
 }
 
@@ -986,6 +1432,10 @@ static int Get_value_at_indices (Bmi *self, const char *name, void *dest, int * 
     void *src = NULL;
     int itemsize = 0;
 
+    /* FLO 10/26: Reject invalid BMI pointers before dereferencing them. */
+    if (!self || !self->data || !name || len < 0 ||
+        (len > 0 && (!inds || !dest))) return BMI_FAILURE;
+    for (int i = 0; i < len; ++i) if (inds[i] != 0) return BMI_FAILURE;
     if (self->get_value_ptr(self, name, &src) == BMI_FAILURE)
         return BMI_FAILURE;
 
@@ -1008,6 +1458,8 @@ static int Get_value_at_indices (Bmi *self, const char *name, void *dest, int * 
 //------------------------------------------------------------------------------
 static int Get_value(Bmi * self, const char * name, void *dest)
 {
+    /* FLO 10/26: A null destination previously reached memcpy and crashed. */
+    if (!self || !name || !dest) return BMI_FAILURE;
     void *src = NULL;
     int nbytes = 0;
 
@@ -1022,16 +1474,98 @@ static int Get_value(Bmi * self, const char * name, void *dest)
     return BMI_SUCCESS;
 }
 
+/* Validate Ball-Berry state and calibration inputs before changing storage.
+ * The BMI pointer interface also permits direct writes, so method 6 must
+ * validate the complete state again immediately before computing fluxes.
+ */
+static int Set_ball_berry_value(Bmi *self, const char *name, const void *value)
+{
+    if (!self || !self->data || !name || !value) return BMI_FAILURE;
+    pet_model *pet = (pet_model *)self->data;
+    double proposed_value = *(const double *)value;
+    if (!isfinite(proposed_value)) return BMI_FAILURE;
+
+    if (strcmp(name, "LAI") == 0) {
+        if (ball_berry_state_set(&pet->bb_canopy, BB_STATE_LAI, proposed_value) == 0) return BMI_SUCCESS;
+        return BMI_FAILURE;
+    }
+    if (strcmp(name, "SAI") == 0) {
+        if (ball_berry_state_set(&pet->bb_canopy, BB_STATE_SAI, proposed_value) == 0) return BMI_SUCCESS;
+        return BMI_FAILURE;
+    }
+    if (strcmp(name, "SHDFAC") == 0) {
+        if (ball_berry_state_set(&pet->bb_canopy, BB_STATE_SHDFAC, proposed_value) == 0) return BMI_SUCCESS;
+        return BMI_FAILURE;
+    }
+    /* FLO 10/21: time inputs: whole numbers in range (time_second may be fractional) */
+    {
+        int time_check = bb6_validate_time_input(name, proposed_value);
+        if (time_check == -1) return BMI_FAILURE;
+        if (time_check == 0) {
+            double *time_target = NULL;
+            if (self->get_value_ptr(self, name, (void **)&time_target) != BMI_SUCCESS || time_target == NULL)
+                return BMI_FAILURE;
+            *time_target = proposed_value;
+            return BMI_SUCCESS;
+        }
+    }
+    /* FLO 10/21: coupling inputs; validate the whole set with the proposed value, change only if valid */
+    {
+        BallBerryCouplingInputs proposed_coupling = pet->bb_coupling_inputs;
+        double *target = NULL;
+        if (strcmp(name, "root_stress_factor_0_to_1") == 0) target = &proposed_coupling.root_stress_factor_0_to_1;
+        else if (strcmp(name, "ground_skin_temperature_K") == 0) target = &proposed_coupling.ground_skin_temperature_K;
+        else if (strcmp(name, "surface_resistance_s_per_m") == 0) target = &proposed_coupling.surface_resistance_s_per_m;
+        else if (strcmp(name, "snow_cover_fraction") == 0) target = &proposed_coupling.snow_cover_fraction;
+        else if (strcmp(name, "snow_depth_m") == 0) target = &proposed_coupling.snow_depth_m;
+        else if (strcmp(name, "snow_albedo_direct_visible") == 0) target = &proposed_coupling.snow_albedo_direct_visible;
+        else if (strcmp(name, "snow_albedo_direct_nir") == 0) target = &proposed_coupling.snow_albedo_direct_nir;
+        else if (strcmp(name, "snow_albedo_diffuse_visible") == 0) target = &proposed_coupling.snow_albedo_diffuse_visible;
+        else if (strcmp(name, "snow_albedo_diffuse_nir") == 0) target = &proposed_coupling.snow_albedo_diffuse_nir;
+        else if (strcmp(name, "canopy_wetted_fraction") == 0) target = &proposed_coupling.canopy_wetted_fraction;
+        else if (strcmp(name, "canopy_liquid_water_mm") == 0) target = &proposed_coupling.canopy_liquid_water_mm;
+        else if (strcmp(name, "canopy_ice_mm") == 0) target = &proposed_coupling.canopy_ice_mm;
+        if (target != NULL) {
+            *target = proposed_value;
+            if (bb6_validate_coupling_inputs(&proposed_coupling) != 0) return BMI_FAILURE;
+            pet->bb_coupling_inputs = proposed_coupling;
+            return BMI_SUCCESS;
+        }
+    }
+    if (proposed_value < 0.0) return BMI_FAILURE;
+    if (strcmp(name, "CWP") == 0) { pet->bb_cwp = proposed_value; return BMI_SUCCESS; }
+    if (strcmp(name, "MP") == 0) { pet->bb_stomata.mp = proposed_value; return BMI_SUCCESS; }
+    if (strcmp(name, "VCMX25") == 0) { pet->bb_stomata.vcmx25 = proposed_value; return BMI_SUCCESS; }
+    return BMI_FAILURE;
+}
+
+static int Is_ball_berry_input(const char *name)
+{
+    /* Ball-Berry inputs are validated by Set_ball_berry_value: every input after the
+     * seven AORC forcings in input_var_names (FLO 10/21: includes the coupling and time inputs). */
+    for (int i = 7; i < INPUT_VAR_NAME_COUNT; ++i)
+        if (strcmp(name, input_var_names[i]) == 0) return 1;
+    return 0;
+}
+
 static int Set_value (Bmi *self, const char *name, void *array)
 {
     void * dest = NULL;
     int nbytes = 0;
 
+    /* FLO 10/26: Guard strcmp against null BMI variable names. */
+    if (!self || !name || !array) return BMI_FAILURE;
+    int writable = 0;
+    for (int i = 0; i < active_input_variable_count(self); ++i)
+        if (strcmp(name, input_var_names[i]) == 0) writable = 1;
+    if (!writable || !array) return BMI_FAILURE;
     if (self->get_value_ptr(self, name, &dest) == BMI_FAILURE)
         return BMI_FAILURE;
 
     if (self->get_var_nbytes(self, name, &nbytes) == BMI_FAILURE)
         return BMI_FAILURE;
+
+    if (Is_ball_berry_input(name)) return Set_ball_berry_value(self, name, array);
 
     memcpy (dest, array, nbytes);
 
@@ -1045,11 +1579,24 @@ static int Set_value_at_indices (Bmi *self, const char *name, int * inds, int le
     void * to = NULL;
     int itemsize = 0;
 
+    /* FLO 10/26: Check the name before strcmp; NULL previously crashed. */
+    if (!self || !self->data || !name || len < 0 ||
+        (len > 0 && (!inds || !src))) return BMI_FAILURE;
+    int writable = 0;
+    for (int i = 0; i < active_input_variable_count(self); ++i)
+        if (strcmp(name, input_var_names[i]) == 0) writable = 1;
+    if (!writable) return BMI_FAILURE;
+    for (int i = 0; i < len; ++i) if (inds[i] != 0) return BMI_FAILURE;
     if (self->get_value_ptr (self, name, &to) == BMI_FAILURE)
         return BMI_FAILURE;
 
     if (self->get_var_itemsize(self, name, &itemsize) == BMI_FAILURE)
         return BMI_FAILURE;
+
+    if (Is_ball_berry_input(name)) {
+        if (len == 0) return BMI_SUCCESS;
+        return Set_ball_berry_value(self, name, src);
+    }
 
     { /* Copy the data */
         size_t i;
@@ -1075,14 +1622,14 @@ static int Get_component_name (Bmi *self, char * name)
 //----------------------------------------------------------------------
 static int Get_input_item_count (Bmi *self, int * count)
 {
-    *count = INPUT_VAR_NAME_COUNT;
+    *count = active_input_variable_count(self);
     return BMI_SUCCESS;
 }
 
 //----------------------------------------------------------------------
 static int Get_input_var_names (Bmi *self, char ** names)
 {
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_input_variable_count(self); i++) {
         strncpy (names[i], input_var_names[i], BMI_MAX_VAR_NAME);
     }
     return BMI_SUCCESS;
@@ -1091,14 +1638,14 @@ static int Get_input_var_names (Bmi *self, char ** names)
 //----------------------------------------------------------------------
 static int Get_output_item_count (Bmi *self, int * count)
 {
-    *count = OUTPUT_VAR_NAME_COUNT;
+    *count = active_output_variable_count(self);
     return BMI_SUCCESS;
 }
 
 //----------------------------------------------------------------------
 static int Get_output_var_names (Bmi *self, char ** names)
 {
-    for (int i = 0; i < OUTPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_output_variable_count(self); i++) {
         strncpy (names[i], output_var_names[i], BMI_MAX_VAR_NAME);
     }
     return BMI_SUCCESS;
@@ -1108,14 +1655,14 @@ static int Get_output_var_names (Bmi *self, char ** names)
 static int Get_var_units (Bmi *self, const char *name, char * units)
 {
     // Check to see if in output array first
-    for (int i = 0; i < OUTPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_output_variable_count(self); i++) {
         if (strcmp(name, output_var_names[i]) == 0) {
             strncpy(units, output_var_units[i], BMI_MAX_UNITS_NAME);
             return BMI_SUCCESS;
         }
     }
     // Then check to see if in input array
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_input_variable_count(self); i++) {
         if (strcmp(name, input_var_names[i]) == 0) {
             strncpy(units, input_var_units[i], BMI_MAX_UNITS_NAME);
             return BMI_SUCCESS;
@@ -1129,28 +1676,31 @@ static int Get_var_units (Bmi *self, const char *name, char * units)
 //----------------------------------------------------------------------
 static int Get_var_nbytes (Bmi *self, const char *name, int * nbytes)
 {
+    /* FLO 10/26: Reject null arguments before metadata lookup. */
+    if (!self || !self->data || !name || !nbytes) return BMI_FAILURE;
     int item_size;
     int item_size_result = Get_var_itemsize(self, name, &item_size);
     if (item_size_result != BMI_SUCCESS) {
         return BMI_FAILURE;
     }
     int item_count = -1;
-    for (int i = 0; i < INPUT_VAR_NAME_COUNT; i++) {
+    for (int i = 0; i < active_input_variable_count(self); i++) {
         if (strcmp(name, input_var_names[i]) == 0) {
             item_count = input_var_item_count[i];
             break;
         }
     }
     if (item_count < 1) {
-        for (int i = 0; i < OUTPUT_VAR_NAME_COUNT; i++) {
+        for (int i = 0; i < active_output_variable_count(self); i++) {
             if (strcmp(name, output_var_names[i]) == 0) {
                 item_count = output_var_item_count[i];
                 break;
             }
         }
     }
-    if (item_count < 1)
-        item_count = ((pet_model *) self->data)->bmi.num_timesteps;
+    /* FLO 10/26: Unknown item counts must fail; num_timesteps is not
+     * the size of a scalar BMI variable and could overflow memcpy. */
+    if (item_count < 1) return BMI_FAILURE;
 
     *nbytes = item_size * item_count;
     return BMI_SUCCESS;
@@ -1164,7 +1714,7 @@ static int Get_var_nbytes (Bmi *self, const char *name, int * nbytes)
 static int Get_grid_rank (Bmi *self, int grid, int * rank)
 {
     if (grid == 0) {
-        *rank = 1;
+        *rank = 0;
         return BMI_SUCCESS;
     }
     else {

@@ -1,6 +1,10 @@
 #ifndef PET_H
 #define PET_H
 
+#include "ball_berry_state.h"
+#include "noahmp_stomata.h"
+#include "ball_berry_helpers.h"
+
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -229,7 +233,38 @@ struct pet_bmi
   int is_forcing_from_bmi;
 };
 
+// FLO 10/21: method 6 nested-solver controls (keys bb_maximum_stability_iterations,
+// bb_maximum_canopy_iterations, bb_stability_relative_tolerance,
+// bb_canopy_temperature_tolerance_k, bb_maximum_temperature_step_k). Ignored by the
+// Noah-MP exact solver. All physics inputs come from ball_berry_reference_config.c.
+typedef struct {
+    double maximum_stability_iterations;
+    double maximum_canopy_iterations;
+    double stability_relative_tolerance;
+    double canopy_temperature_tolerance_k;
+    double maximum_temperature_step_k;
+} BallBerrySolverControls;
+
 struct pet_model{
+  BallBerrySolverControls bb_solver;          // FLO 10/21: nested-solver controls only
+  BallBerryCanopyState bb_canopy;             // Independent LAI, SAI, and SHDFAC canopy state supplied by NOM or data assimilation.
+  NoahmpStomataParameters bb_stomata;         // Noah-MP stomatal physiology parameters, including Ball-Berry slope MP and VCMX25.
+  double bb_cwp;                              // Dimensionless canopy wind attenuation coefficient, NOM parameter CWPVT.
+  double bb_transpiration_m_per_s;        // Ball-Berry potential canopy transpiration flux [m/s], without root-zone moisture stress.
+  NoahmpStabilityInput bb_stability_input; // Complete explicit method-6 canopy forcing; populated by caller/BMI adapter.
+  int bb_stability_input_ready;           // TRUE only after all required method-6 inputs are populated.
+  int bb_noahmp_compatibility;             // TRUE freezes Ball-Berry stomata after first outer iteration. Key bb_noahmp_compatibility.
+  int bb_noahmp_exact_iteration;           // FLO 10/20: TRUE uses noahmp_vege_flux_exact_solve (VEGE_FLUX loop1 replica). Key bb_noahmp_exact_iteration.
+  char *config_file_path;                  // FLO 10/21: configuration file given to Initialize; method 6 reads its physics from it.
+  BallBerryMethod6Parameters bb_parameters; // FLO 10/21: method 6 parameters and constants, read once at Initialize.
+  BallBerryTimeInputs bb_time_inputs;       // FLO 10/21: BMI time inputs (UTC, start of step), set by the driver.
+  BallBerryCouplingInputs bb_coupling_inputs;   // FLO 10/21: BMI inputs from the coupled modules (see ball_berry_state.h)
+  BallBerryCouplingOutputs bb_coupling_outputs; // FLO 10/21: BMI outputs to the coupled modules (see ball_berry_state.h)
+  char *bb_iteration_trace_file;           // FLO 10/20: optional per-iteration CSV trace (exact mode). Key bb_iteration_trace_file.
+  char *bb_diagnostic_summary_file;        // FLO 10/21: optional method 6 solution summary (name,value; last update). Key bb_diagnostic_summary_file.
+  NoahmpStabilityOutput bb_last_output;    // FLO 10/20: full method 6 solution from the last update, for diagnostics.
+
+
   
   // FLAGS
   int yes_aorc; // if TRUE then using AORC forcing data- if FALSE then we must calculate incoming short/longwave rad.
@@ -282,6 +317,18 @@ void pet_unit_tests(pet_model* model);
 /**************************************************************************/
 /* ALL THE STUFF BELOW HERE IS JUST UTILITY MEMORY AND TIME FUNCTION CODE */
 /**************************************************************************/
+// FLO 10/21: method 6 (ball_berry_method6_inputs.c).
+//   bb6_initialize_from_configuration  called by BMI Initialize: parses the configuration once into
+//                                      pet->bb_parameters and sets the initial BMI variable values
+//   bb6_build_canopy_input             called by run_pet (BMI update): builds the canopy input from
+//                                      the BMI forcing, time and coupling inputs and pet->bb_parameters
+//   bb6_validate_coupling_inputs,
+//   bb6_validate_time_input            range checks used by BMI set_value
+extern int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_file_path);
+extern int bb6_build_canopy_input(pet_model *pet);
+extern int bb6_validate_coupling_inputs(const BallBerryCouplingInputs *coupling);
+extern int bb6_validate_time_input(const char *time_variable_name, double value);
+
 extern void parse_aorc_line_pet(char *theString,long *year,long *month, long *day,long *hour,
                             long *minute, double *dsec, struct aorc_forcing_data_pet *aorc);
 
