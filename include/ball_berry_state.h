@@ -63,7 +63,7 @@ typedef struct {
  * Noah-MP names in brackets. */
 typedef struct {
     int    use_monthly_lai_sai_table;                  /* 1: LAI, SAI from the monthly table every step */
-    double latitude_deg;                               /* only the sign is used (hemisphere) */
+    double latitude_degrees;                             /* only the sign is used (hemisphere) */
     double leaf_area_index_by_month[12];               /* [LAIM] January..December */
     double stem_area_index_by_month[12];               /* [SAIM] */
     double canopy_top_height_m;                        /* [HVT] */

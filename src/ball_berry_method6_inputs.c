@@ -214,7 +214,7 @@ int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_
 
     // ---- parameters and constants that are not BMI variables
     parameters->use_monthly_lai_sai_table = (int)configuration_real(&table, "use_monthly_lai_sai_table");
-    parameters->latitude_deg = configuration_real(&table, "latitude_deg");
+    parameters->latitude_degrees = configuration_real(&table, "latitude_degrees");
     for (month_index = 0; month_index < 12; ++month_index) {
         snprintf(month_key, sizeof(month_key), "lai_month_%02d", month_index + 1);
         parameters->leaf_area_index_by_month[month_index] = configuration_real(&table, month_key);
@@ -356,7 +356,7 @@ static int interpolate_monthly_lai_sai(const BallBerryMethod6Parameters *paramet
                             time_inputs->time_minute / 1440.0 + time_inputs->time_second / 86400.0;
 
     day_value = julian_day_since_jan1;
-    if (parameters->latitude_deg < 0.0)          // southern hemisphere: shifted by half a year
+    if (parameters->latitude_degrees < 0.0)          // southern hemisphere: shifted by half a year
         day_value = fmod(julian_day_since_jan1 + 0.5 * year_length_days, (double)year_length_days);
     month_position = 12.0 * day_value / (double)year_length_days;     // T
     month_index_1 = (int)(month_position + 0.5);                       // IT1, Fortran INTEGER truncation
