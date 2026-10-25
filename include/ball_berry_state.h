@@ -43,6 +43,9 @@ typedef struct {
     double canopy_wetted_fraction;           /* [FWET]   from the canopy interception module (CIESM) */
     double canopy_liquid_water_mm;           /* [CANLIQ] from CIESM */
     double canopy_ice_mm;                    /* [CANICE] from CIESM */
+    double precipitation_advected_heat_to_canopy_W_per_m2;  /* [PAHV] from CIESM canopy_interception: heat
+                                                         carried to the canopy by precipitation, added to
+                                                         the canopy energy balance (FLO 10/24) */
 } BallBerryCouplingInputs;
 
 /* FLO 10/21: calendar time of the current step, set by the BMI driver before each update.
@@ -108,5 +111,8 @@ typedef struct {
     double canopy_air_vapor_pressure_Pa;                    /* [EAH] */
     double below_canopy_aerodynamic_resistance_s_per_m;     /* [RAHG] = RAWG, ground to canopy air */
     double vegetation_temperature_K;                        /* [TV] */
+    double canopy_latent_heat_J_per_kg;                     /* [LATHEAV] HVAP or HSUB, the latent heat used
+                                                               for EVC and TR; CIESM canopy_storage converts
+                                                               EVC to water with it (FLO 10/24) */
 } BallBerryCouplingOutputs;
 #endif

@@ -151,6 +151,7 @@ extern int run_pet(pet_model* model)
       coupling_outputs->below_canopy_aerodynamic_resistance_s_per_m =
           output.ground_canopy.ground_heat_resistance_s_per_m;                                                   // RAHG
       coupling_outputs->vegetation_temperature_K = TV;                                                           // TV
+      coupling_outputs->canopy_latent_heat_J_per_kg = canopy_inputs->latent_heat_j_per_kg;                       // LATHEAV (FLO 10/24)
     }
 
     // FLO 10/21: optional diagnostic summary of this update (Noah-MP names), for comparison with

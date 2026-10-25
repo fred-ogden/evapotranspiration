@@ -41,7 +41,7 @@ static const char *forcing_bmi_names[7] = {
     "land_surface_wind__y_component_of_velocity" };
 
 // method 6 outputs printed after each update
-static const char *method6_output_names[9] = {
+static const char *method6_output_names[10] = {
     "water_potential_evaporation_flux",
     "canopy_transpiration_flux_m_per_s",
     "canopy_evaporation_heat_flux_W_per_m2",
@@ -50,7 +50,8 @@ static const char *method6_output_names[9] = {
     "canopy_air_temperature_K",
     "canopy_air_vapor_pressure_Pa",
     "below_canopy_aerodynamic_resistance_s_per_m",
-    "vegetation_temperature_K" };
+    "vegetation_temperature_K",
+    "canopy_latent_heat_J_per_kg" };
 
 static void print_usage(const char *program_name)
 {
@@ -213,7 +214,7 @@ int main(int argc, const char *argv[])
             break;
         }
         printf("step %d  %s\n", step + 1, data_fields[time_column_index]);
-        for (variable = 0; variable < 9; ++variable) {
+        for (variable = 0; variable < 10; ++variable) {
             double output_value;
             char units[BMI_MAX_UNITS_NAME];
             if (model->get_value(model, method6_output_names[variable], &output_value) != BMI_SUCCESS ||

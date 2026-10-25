@@ -33,6 +33,7 @@
 # Usage:
 #   python3 make_harness_module.py module_sf_noahmplsm.F module_sf_noahmplsm_harness.F
 # ------------------------------------------------------------------------------------------
+import re
 import sys
 
 if len(sys.argv) != 3:
@@ -54,14 +55,20 @@ def replace_exactly_once(text, old_text, new_text, description):
 
 
 # ---- change 1: make the routines the driver calls public ----------------------------------
-for routine_line in ["  private ::       RADIATION\n",
-                     "  private ::       VEGE_FLUX\n",
-                     "  private ::               STOMATA                  \n",
-                     "  private ::               ESAT\n"]:
-    public_line = routine_line.replace("private", "public ")
-    source_text = replace_exactly_once(source_text, routine_line,
-                                       "! HARNESS PATCH: was private\n" + public_line,
-                                       "public " + routine_line.strip())
+# FLO 10/24: matched with a regular expression that ignores the run of blanks after the routine
+# name, because copies of the NWM file differ in trailing blanks on these lines.
+def make_routine_public(text, routine_name):
+    """Change the one 'private :: ROUTINE' declaration line to public."""
+    pattern = re.compile(r"^(  )private(\s+::\s+" + routine_name + r")[ \t]*$", re.MULTILINE)
+    match_list = pattern.findall(text)
+    if len(match_list) != 1:
+        sys.exit("patch failed (public %s): expected 1 occurrence, found %d" % (routine_name, len(match_list)))
+    return pattern.sub(lambda match: "! HARNESS PATCH: was private\n" + match.group(1) + "public " +
+                       match.group(2), text)
+
+
+for routine_name in ["RADIATION", "VEGE_FLUX", "STOMATA", "ESAT"]:
+    source_text = make_routine_public(source_text, routine_name)
 
 # ---- change 2: harness control variables ----------------------------------------------------
 old_text = "  INTEGER :: OPT_IMPERV  ! options for imperviousness infiltration adjustment\n"

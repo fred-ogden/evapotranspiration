@@ -90,7 +90,7 @@ sets `bb_noahmp_exact_iteration` and the names of the summary and trace files fo
 | File | Contents |
 |---|---|
 | noahmp_comparison/output/C/c_summary_exact.csv, c_summary_nested.csv | C solution, Noah-MP names, one value per row (written by the model, key bb_diagnostic_summary_file) |
-| noahmp_comparison/output/C/c_bmi_outputs_exact.txt, c_bmi_outputs_nested.txt | the nine method 6 BMI outputs, as the driver received them with get_value |
+| noahmp_comparison/output/C/c_bmi_outputs_exact.txt, c_bmi_outputs_nested.txt | the ten method 6 BMI outputs, as the driver received them with get_value |
 | noahmp_comparison/output/C/configuration_exact.txt, configuration_nested.txt | the configuration each C solver mode read |
 | noahmp_comparison/output/C/c_canopy_iteration_trace_exact.csv | one row per canopy iteration (exact solver only) |
 | noahmp_comparison/output/Fortran/noahmp_canopy_reference_summary_r4.csv, _r8.csv | Fortran solution: name, value, units, description |
@@ -216,7 +216,10 @@ When snow is deeper than 0.05 m and TG is above freezing, Noah-MP (OPT_STC = 3) 
 ### Canopy evaporation
 
 Transpiration TR and the evaporation of intercepted water EVC come from the same leaf
-temperature solve in VEGE_FLUX, so this module computes both. CIESM supplies the wetted
+temperature solve in VEGE_FLUX, so this module computes both. CIESM (the `ciesm` repository,
+components canopy_interception before this module and canopy_storage after it) supplies the
+wetted fraction, the intercepted water and the heat advected to the canopy by precipitation
+(PAHV), and receives EVC, LATHEAV and TV. CIESM supplies the wetted
 fraction and the intercepted liquid and ice, receives EVC, and owns the canopy water storage
 mass balance. Until CIESM exists, these inputs keep their configured values (a dry canopy).
 
@@ -273,6 +276,7 @@ set, and an update that needs them before they are set fails with a message.
 | canopy_wetted_fraction | FWET | 1 | CIESM |
 | canopy_liquid_water_mm | CANLIQ | mm | CIESM |
 | canopy_ice_mm | CANICE | mm | CIESM |
+| precipitation_advected_heat_to_canopy_W_per_m2 | PAHV | W m-2 | CIESM canopy_interception; added to the canopy energy balance (B in VEGE_FLUX) |
 | time_year | | year | driver |
 | time_month | | month (1 to 12) | driver |
 | time_day_of_month | | d (1 to 31) | driver |
@@ -293,6 +297,7 @@ set, and an update that needs them before they are set fails with a message.
 | canopy_air_vapor_pressure_Pa | EAH | Pa | SFT, bare soil evaporation |
 | below_canopy_aerodynamic_resistance_s_per_m | RAHG (= RAWG) | s m-1 | SFT, bare soil evaporation |
 | vegetation_temperature_K | TV | K | CIESM, snow module |
+| canopy_latent_heat_J_per_kg | LATHEAV | J kg-1 | CIESM canopy_storage: HVAP or HSUB, the latent heat used for EVC and TR |
 
 Conventions:
 
