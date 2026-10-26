@@ -263,6 +263,14 @@ struct pet_model{
   char *bb_iteration_trace_file;           // FLO 10/20: optional per-iteration CSV trace (exact mode). Key bb_iteration_trace_file.
   char *bb_diagnostic_summary_file;        // FLO 10/21: optional method 6 solution summary (name,value; last update). Key bb_diagnostic_summary_file.
   NoahmpStabilityOutput bb_last_output;    // FLO 10/20: full method 6 solution from the last update, for diagnostics.
+  // FLO 10/26: no exposed canopy this step (ELAI + ESAI = 0: buried by snow or bare): Noah-MP skips
+  // VEGE_FLUX; bb6_build_canopy_input sets these and run_pet writes the no-canopy outputs.
+  int    bb_no_canopy_this_step;
+  double bb_no_canopy_ground_shortwave_W_per_m2;   // SAG without a canopy
+  double bb_no_canopy_ground_emissivity;           // EMG
+  double bb_no_canopy_air_temperature_K;           // TAH = SFCTMP (ATM)
+  double bb_no_canopy_air_vapor_pressure_Pa;       // EAH = SFCPRS*QV/(0.622+QV), QV = Q2/(1-Q2) (ATM)
+  double bb_no_canopy_vegetation_temperature_K;    // TV is not updated by Noah-MP: start-of-step TV
 
 
   

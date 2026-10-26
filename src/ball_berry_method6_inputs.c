@@ -141,6 +141,134 @@ static double configuration_real(ConfigurationTable *table, const char *key)
     return NAN;
 }
 
+// FLO 10/26: optional numeric value: the default if the key is absent (records a failure only if
+// the key is present and malformed). Used for the keys added after the NWM replica configuration.
+static double configuration_real_or_default(ConfigurationTable *table, const char *key, double default_value)
+{
+    int entry_index;
+    for (entry_index = 0; entry_index < table->entry_count; ++entry_index) {
+        if (strcmp(table->key_list[entry_index], key) == 0) return configuration_real(table, key);
+    }
+    return default_value;
+}
+
+// ---------------------------------------------------------------------------------------------
+// FLO 10/26: Noah-MP calendar and solar geometry, identical to NoahMP_snow_ablation
+// (noahmp_snow_surface_physics.c, a port of NOM UtilitiesModule calc_declin_components):
+// proleptic Gregorian with the 3600-year exception; slope and aspect after Corripio (2003).
+// ---------------------------------------------------------------------------------------------
+static int noahmp_february_days(int year)
+{
+    int days = 28;
+    if (year % 4 == 0) {
+        days = 29;
+        if (year % 100 == 0) {
+            days = 28;
+            if (year % 400 == 0) {
+                days = 29;
+                if (year % 3600 == 0) days = 28;
+            }
+        }
+    }
+    return days;
+}
+
+static int noahmp_day_of_year_offset(int year, int month, int day)
+{
+    static const int cumulative_days[12] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+    int offset = cumulative_days[month - 1] + day - 1;
+    if (month > 2) offset = offset + (noahmp_february_days(year) - 28);
+    return offset;
+}
+
+static long noahmp_year_start_day(int year)
+{
+    long y = (long)year - 1;
+    return 365 * y + y / 4 - y / 100 + y / 400 - y / 3600;
+}
+
+static void noahmp_advance_datetime(int year, int month, int day, int hour, int minute, long minutes,
+                                    int *year2, int *month2, int *day2, int *hour2, int *minute2)
+{
+    static const int month_days[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    long total = (long)hour * 60 + minute + minutes;
+    long minute_of_day = ((total % 1440) + 1440) % 1440;
+    long days = noahmp_year_start_day(year) + noahmp_day_of_year_offset(year, month, day) + (total - minute_of_day) / 1440;
+    long day_of_year;
+    int y, m, month_length;
+    y = (int)(((double)days + 0.5) / 365.2425) + 1;
+    while (noahmp_year_start_day(y + 1) <= days) ++y;
+    while (noahmp_year_start_day(y) > days) --y;
+    day_of_year = days - noahmp_year_start_day(y);
+    m = 1;
+    for (;;) {
+        month_length = (m == 2) ? noahmp_february_days(y) : month_days[m - 1];
+        if (day_of_year < month_length) break;
+        day_of_year -= month_length;
+        ++m;
+    }
+    *year2 = y;
+    *month2 = m;
+    *day2 = (int)day_of_year + 1;
+    *hour2 = (int)(minute_of_day / 60);
+    *minute2 = (int)(minute_of_day % 60);
+}
+
+static void noahmp_calc_declin_components(int iday, int ihour, int iminute, int isecond, double latitude,
+                                          double longitude, double slope, double azimuth, double *COSZ,
+                                          double *COSZ_HORIZ)
+{
+    const double DEGRAD = 3.14159265 / 180.;
+    const double DPD = 360. / 365.;
+    double JULIAN, HRANG, DECLIN, TLOCTIM, SINOB, SXLONG, nvx, nvy, nvz, svx, svy, svz;
+    JULIAN = (double)iday + (double)ihour / 24.;
+    SINOB = sin(23.5 * DEGRAD);
+    if (JULIAN >= 80.) {
+        SXLONG = DPD * (JULIAN - 80.) * DEGRAD;
+    } else {
+        SXLONG = DPD * (JULIAN + 285.) * DEGRAD;
+    }
+    DECLIN = asin(SINOB * sin(SXLONG));
+    TLOCTIM = (double)ihour + (double)iminute / 60.0 + (double)isecond / 3600.0 + longitude / 15.0;
+    TLOCTIM = fmod(TLOCTIM + 24.0, 24.0);
+    HRANG = 15. * (TLOCTIM - 12.) * DEGRAD;
+    nvx = sin(azimuth * DEGRAD) * sin(slope * DEGRAD);
+    nvy = -cos(azimuth * DEGRAD) * sin(slope * DEGRAD);
+    nvz = cos(slope * DEGRAD);
+    svx = -sin(HRANG) * cos(DECLIN);
+    svy = (sin(latitude * DEGRAD) * cos(HRANG) * cos(DECLIN)) - (cos(latitude * DEGRAD) * sin(DECLIN));
+    svz = (cos(latitude * DEGRAD) * cos(HRANG) * cos(DECLIN)) + (sin(latitude * DEGRAD) * sin(DECLIN));
+    *COSZ = (nvx * svx) + (nvy * svy) + (nvz * svz);
+    *COSZ_HORIZ = svz;
+}
+
+// COSZ and COSZ_HORIZ of this step from the BMI time inputs (start of step, UTC). Returns 0 or -1.
+static int bb6_solar_geometry(const pet_model *pet, double *COSZ, double *COSZ_HORIZ)
+{
+    const BallBerryMethod6Parameters *parameters = &pet->bb_parameters;
+    const BallBerryTimeInputs *time_inputs = &pet->bb_time_inputs;
+    int year, month, day, hour, minute;
+    if (isnan(time_inputs->time_year) || isnan(time_inputs->time_month) || isnan(time_inputs->time_day_of_month) ||
+        isnan(time_inputs->time_hour) || isnan(time_inputs->time_minute) || isnan(time_inputs->time_second)) {
+        fprintf(stderr, "ERROR: PET method 6 with solar_geometry_option = 1 needs the BMI time inputs\n");
+        return -1;
+    }
+    year = (int)time_inputs->time_year;
+    month = (int)time_inputs->time_month;
+    day = (int)time_inputs->time_day_of_month;
+    hour = (int)time_inputs->time_hour;
+    minute = (int)time_inputs->time_minute;
+    if (parameters->solar_geometry_at_end_of_step == 1) {       // NOM UtilitiesMain: itime*(dt/60) minutes
+        noahmp_advance_datetime(year, month, day, hour, minute, (long)(pet->bmi.time_step_size_s / 60.0),
+                                &year, &month, &day, &hour, &minute);
+    }
+    noahmp_calc_declin_components(noahmp_day_of_year_offset(year, month, day), hour, minute,
+                                  (int)time_inputs->time_second, parameters->latitude_degrees,
+                                  parameters->longitude_degrees, parameters->terrain_slope_degrees,
+                                  parameters->terrain_azimuth_degrees, COSZ, COSZ_HORIZ);
+    return 0;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Range checks used at Initialize and by BMI set_value.
 // ---------------------------------------------------------------------------------------------
@@ -155,13 +283,16 @@ int bb6_validate_coupling_inputs(const BallBerryCouplingInputs *coupling)
     if (!(coupling->surface_resistance_s_per_m >= 0.0) || !isfinite(coupling->surface_resistance_s_per_m)) return -1;
     if (!(coupling->snow_cover_fraction >= 0.0 && coupling->snow_cover_fraction <= 1.0)) return -1;
     if (!(coupling->snow_depth_m >= 0.0) || !isfinite(coupling->snow_depth_m)) return -1;
-    if (!(coupling->snow_albedo_direct_visible > 0.0 && coupling->snow_albedo_direct_visible < 1.0)) return -1;
-    if (!(coupling->snow_albedo_direct_nir > 0.0 && coupling->snow_albedo_direct_nir < 1.0)) return -1;
-    if (!(coupling->snow_albedo_diffuse_visible > 0.0 && coupling->snow_albedo_diffuse_visible < 1.0)) return -1;
-    if (!(coupling->snow_albedo_diffuse_nir > 0.0 && coupling->snow_albedo_diffuse_nir < 1.0)) return -1;
+    if (!(coupling->snow_albedo_direct_visible >= 0.0 && coupling->snow_albedo_direct_visible < 1.0)) return -1;
+    if (!(coupling->snow_albedo_direct_nir >= 0.0 && coupling->snow_albedo_direct_nir < 1.0)) return -1;
+    if (!(coupling->snow_albedo_diffuse_visible >= 0.0 && coupling->snow_albedo_diffuse_visible < 1.0)) return -1;
+    if (!(coupling->snow_albedo_diffuse_nir >= 0.0 && coupling->snow_albedo_diffuse_nir < 1.0)) return -1;
     if (!(coupling->canopy_wetted_fraction >= 0.0 && coupling->canopy_wetted_fraction <= 1.0)) return -1;
     if (!(coupling->canopy_liquid_water_mm >= 0.0) || !isfinite(coupling->canopy_liquid_water_mm)) return -1;
     if (!(coupling->canopy_ice_mm >= 0.0) || !isfinite(coupling->canopy_ice_mm)) return -1;
+    // FLO 10/26: snow albedos may be 0 (NoahMP_snow_ablation at night, as Noah-MP ALBEDO); SMC(1) NaN = not supplied
+    if (!isnan(coupling->soil_top_disc_moisture_content) &&
+        !(coupling->soil_top_disc_moisture_content >= 0.0 && coupling->soil_top_disc_moisture_content <= 1.0)) return -1;
     // FLO 10/24: PAHV, any sign; NWM Noah-MP clamps it to +/-20 W m-2, the CIESM revised physics does not
     if (!isfinite(coupling->precipitation_advected_heat_to_canopy_W_per_m2) ||
         fabs(coupling->precipitation_advected_heat_to_canopy_W_per_m2) > 1.0e4) return -1;
@@ -272,6 +403,23 @@ int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_
         configuration_real(&table, "canopy_heat_capacity_per_unit_area_index_J_per_m2_per_K");
     parameters->canopy_phase_change_window_k = configuration_real(&table, "canopy_phase_change_window_k");
     parameters->frozen_transpiration_ramp_k = configuration_real(&table, "frozen_transpiration_ramp_k");
+    // FLO 10/26: options for the decoupled Noah-MP stack (optional keys, defaults = before 10/26)
+    parameters->solar_geometry_option = (int)configuration_real_or_default(&table, "solar_geometry_option", 0.0);
+    parameters->solar_geometry_at_end_of_step =
+        (int)configuration_real_or_default(&table, "solar_geometry_at_end_of_step", 1.0);
+    parameters->longitude_degrees = configuration_real_or_default(&table, "longitude_degrees", 0.0);
+    parameters->terrain_slope_degrees = configuration_real_or_default(&table, "terrain_slope_degrees", 0.0);
+    parameters->terrain_azimuth_degrees = configuration_real_or_default(&table, "terrain_azimuth_degrees", 0.0);
+    parameters->dynamic_vegetation_option = (int)configuration_real_or_default(&table, "dynamic_vegetation_option", 0.0);
+    parameters->surface_resistance_snow_blend_option =
+        (int)configuration_real_or_default(&table, "surface_resistance_snow_blend_option", 0.0);
+    parameters->surface_resistance_snow_s_per_m =
+        configuration_real_or_default(&table, "surface_resistance_snow_s_per_m", 50.0);
+    parameters->soil_albedo_option = (int)configuration_real_or_default(&table, "soil_albedo_option", 0.0);
+    parameters->soil_albedo_saturated[0] = configuration_real_or_default(&table, "soil_albedo_saturated_visible", 0.09);
+    parameters->soil_albedo_saturated[1] = configuration_real_or_default(&table, "soil_albedo_saturated_nir", 0.18);
+    parameters->soil_albedo_dry[0] = configuration_real_or_default(&table, "soil_albedo_dry_visible", 0.18);
+    parameters->soil_albedo_dry[1] = configuration_real_or_default(&table, "soil_albedo_dry_nir", 0.36);
 
     // ---- STOMATA physiology; MP and VCMX25 are also BMI variables (initial values here)
     pet->bb_stomata.bp = configuration_real(&table, "minimum_leaf_conductance_umol_per_m2_per_s");
@@ -311,6 +459,8 @@ int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_
     coupling->vegetation_temperature_start_of_step_K = NAN;      // FLO 10/24: not known until the first update
     coupling->canopy_air_temperature_start_of_step_K = NAN;
     coupling->canopy_air_vapor_pressure_start_of_step_Pa = NAN;
+    coupling->soil_top_disc_moisture_content =                    // FLO 10/26: optional, see soil_albedo_option
+        configuration_real_or_default(&table, "soil_top_disc_moisture_content", NAN);
 
     // ---- time inputs are set by the driver before each update; undefined until then
     pet->bb_time_inputs.time_year = NAN;
@@ -334,6 +484,9 @@ int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_
     coupling_outputs->canopy_freezing_rate_mm_per_s = NAN;
     coupling_outputs->canopy_fusion_heat_flux_W_per_m2 = NAN;
     coupling_outputs->canopy_heat_storage_flux_W_per_m2 = NAN;
+    coupling_outputs->surface_resistance_with_snow_s_per_m = NAN;   // FLO 10/26
+    coupling_outputs->cosine_solar_zenith_angle = NAN;
+    coupling_outputs->vegetated_fraction = NAN;
 
     if (table.lookup_failed) status = -1;
     free_configuration_table(&table);           // the parsed text is no longer needed
@@ -365,6 +518,18 @@ int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_
                             "canopy_phase_change_window_k > 0 and frozen_transpiration_ramp_k > 0\n");
             return -1;
         }
+    }
+    if ((parameters->solar_geometry_option != 0 && parameters->solar_geometry_option != 1) ||
+        (parameters->solar_geometry_at_end_of_step != 0 && parameters->solar_geometry_at_end_of_step != 1) ||
+        (parameters->dynamic_vegetation_option != 0 && parameters->dynamic_vegetation_option != 1) ||
+        (parameters->surface_resistance_snow_blend_option != 0 && parameters->surface_resistance_snow_blend_option != 1) ||
+        (parameters->soil_albedo_option != 0 && parameters->soil_albedo_option != 1) ||
+        !(parameters->surface_resistance_snow_s_per_m > 0.0) || !(fabs(parameters->longitude_degrees) <= 360.0) ||
+        !(parameters->terrain_slope_degrees >= 0.0 && parameters->terrain_slope_degrees <= 90.0)) {
+        fprintf(stderr, "ERROR: solar_geometry_option, solar_geometry_at_end_of_step, dynamic_vegetation_option, "
+                        "surface_resistance_snow_blend_option and soil_albedo_option must be 0 or 1; surface_resistance_snow_s_per_m > 0; "
+                        "longitude and terrain slope in range\n");
+        return -1;
     }
     if (ball_berry_state_validate(&pet->bb_canopy) != 0) {
         fprintf(stderr, "ERROR: invalid leaf_area_index, stem_area_index or green_vegetation_fraction\n");
@@ -447,8 +612,8 @@ int bb6_build_canopy_input(pet_model *pet)
     double initial_canopy_air_vapor_pressure_pa, latent_heat_vegetation_j_per_kg;
     // Noah-MP names used in the science code below
     double BTRAN, TG, RSURF, FSNO, SNOWH, FWET, CANLIQ, CANICE;
-    double ALBSND[2], ALBSNI[2];
-    double HVT, HVB, DB, FB, SNOWHC, ELAI, ESAI, ZPDG, Z0MG, EG;
+    double ALBSND[2], ALBSNI[2], ALBSOD[2], ALBSOI[2];
+    double HVT, HVB, DB, FB, SNOWHC, ELAI, ESAI, ZPDG, Z0MG, EG, COSZ;
     int band;
 
     if (pet == NULL) return -1;
@@ -496,6 +661,42 @@ int bb6_build_canopy_input(pet_model *pet)
     air_density_kg_per_m3 = (surface_pressure_pa - 0.378 * air_vapor_pressure_pa) /
                             (noahmp_gas_constant_dry_air_j_per_kg_k * air_temperature_k);   // RHOAIR
 
+    // ---- FLO 10/26: snow-free soil albedo, configured or GROUNDALB from the top-disc soil moisture
+    for (band = 0; band < 2; ++band) {
+        if (parameters->soil_albedo_option == 1) {
+            double INC;
+            if (isnan(coupling->soil_top_disc_moisture_content)) {
+                fprintf(stderr, "ERROR: PET method 6 with soil_albedo_option = 1 needs soil_top_disc_moisture_content\n");
+                return -1;
+            }
+            INC = fmax(0.11 - 0.40 * coupling->soil_top_disc_moisture_content, 0.0);
+            ALBSOD[band] = fmin(parameters->soil_albedo_saturated[band] + INC, parameters->soil_albedo_dry[band]);
+            ALBSOI[band] = ALBSOD[band];
+        } else {
+            ALBSOD[band] = parameters->soil_albedo_direct[band];
+            ALBSOI[band] = parameters->soil_albedo_diffuse[band];
+        }
+    }
+
+    // ---- FLO 10/26: solar geometry. Option 1: COSZ from the time inputs; the shortwave is corrected to
+    //      the sloped terrain as NOM ATM does (SWDOWN = SOLDN*COSZ/COSZ_HORIZ, at most the solar constant
+    //      times COSZ; 0 when the sun is down); with zero slope COSZ = COSZ_HORIZ and SWDOWN = SOLDN.
+    if (parameters->solar_geometry_option == 1) {
+        double COSZ_HORIZ;
+        const double solar_constant_w_per_m2 = 1360.0;
+        if (bb6_solar_geometry(pet, &COSZ, &COSZ_HORIZ) != 0) return -1;
+        if (COSZ <= 0.0 || COSZ_HORIZ <= 0.0) {
+            downward_shortwave_w_per_m2 = 0.0;
+        } else if (downward_shortwave_w_per_m2 / COSZ_HORIZ > solar_constant_w_per_m2) {
+            downward_shortwave_w_per_m2 = solar_constant_w_per_m2 * COSZ;
+        } else {
+            downward_shortwave_w_per_m2 = downward_shortwave_w_per_m2 * (COSZ / COSZ_HORIZ);
+        }
+    } else {
+        COSZ = parameters->cosine_solar_zenith_angle;
+    }
+    pet->bb_coupling_outputs.cosine_solar_zenith_angle = COSZ;
+
     // ---- leaf and stem area index: monthly table (written back to BMI) or current BMI values
     if (parameters->use_monthly_lai_sai_table == 1) {
         if (interpolate_monthly_lai_sai(parameters, &pet->bb_time_inputs, &leaf_area_index, &stem_area_index) != 0)
@@ -528,11 +729,50 @@ int bb6_build_canopy_input(pet_model *pet)
     leaf_area_index = ELAI;                         // from here on, the exposed indices
     stem_area_index = ESAI;
     vegetation_area_index = leaf_area_index + stem_area_index;
-    if (!(vegetation_area_index > 0.0)) {
-        fprintf(stderr, "ERROR: PET method 6 needs exposed LAI + SAI > 0 (canopy buried or bare)\n");
-        return -1;
-    }
     green_vegetation_fraction = pet->bb_canopy.shdfac;   // FVEG
+    // FLO 10/26: PHENOLOGY DVEG = 1 floor, and FVEG = 0 without an exposed canopy (NOAHMP_SFLX)
+    if (parameters->dynamic_vegetation_option == 1 && green_vegetation_fraction <= 0.05) green_vegetation_fraction = 0.05;
+    if (vegetation_area_index == 0.0) green_vegetation_fraction = 0.0;
+    pet->bb_coupling_outputs.vegetated_fraction = green_vegetation_fraction;
+
+    // FLO 10/26: surface resistance with snow, OPT_RSF = 4 (EnergyMain)
+    if (parameters->surface_resistance_snow_blend_option == 1) {
+        RSURF = 1.0 / (FSNO * (1.0 / parameters->surface_resistance_snow_s_per_m) +
+                       (1.0 - FSNO) * (1.0 / fmax(RSURF, 0.001)));
+    }
+    pet->bb_coupling_outputs.surface_resistance_with_snow_s_per_m = RSURF;
+
+    // FLO 10/26: no exposed canopy (buried by snow, or bare): Noah-MP does not call VEGE_FLUX. The
+    // ground absorbs the shortwave without a canopy; TAH and EAH stay as ATM set them; TV is not updated.
+    pet->bb_no_canopy_this_step = 0;
+    if (!(vegetation_area_index > 0.0)) {
+        double qv = specific_humidity_kg_per_kg / (1.0 - specific_humidity_kg_per_kg);
+        double ground_shortwave = 0.0;
+        if (COSZ > 0.0) {
+            double solad[2], solai[2];
+            solad[0] = downward_shortwave_w_per_m2 * parameters->direct_shortwave_fraction *
+                       parameters->visible_shortwave_fraction;
+            solad[1] = downward_shortwave_w_per_m2 * parameters->direct_shortwave_fraction *
+                       (1.0 - parameters->visible_shortwave_fraction);
+            solai[0] = downward_shortwave_w_per_m2 * (1.0 - parameters->direct_shortwave_fraction) *
+                       parameters->visible_shortwave_fraction;
+            solai[1] = downward_shortwave_w_per_m2 * (1.0 - parameters->direct_shortwave_fraction) *
+                       (1.0 - parameters->visible_shortwave_fraction);
+            for (band = 0; band < 2; ++band) {
+                double ground_albedo_direct = ALBSOD[band] * (1.0 - FSNO) + ALBSND[band] * FSNO;
+                double ground_albedo_diffuse = ALBSOI[band] * (1.0 - FSNO) + ALBSNI[band] * FSNO;
+                ground_shortwave += solad[band] * (1.0 - ground_albedo_direct) + solai[band] * (1.0 - ground_albedo_diffuse);
+            }
+        }
+        pet->bb_no_canopy_this_step = 1;
+        pet->bb_no_canopy_ground_shortwave_W_per_m2 = ground_shortwave;
+        pet->bb_no_canopy_ground_emissivity = parameters->soil_emissivity * (1.0 - FSNO) + FSNO;
+        pet->bb_no_canopy_air_temperature_K = air_temperature_k;
+        pet->bb_no_canopy_air_vapor_pressure_Pa = surface_pressure_pa * qv / (0.622 + qv);
+        pet->bb_no_canopy_vegetation_temperature_K = isnan(coupling->vegetation_temperature_start_of_step_K) ?
+            air_temperature_k : coupling->vegetation_temperature_start_of_step_K;
+        return 0;
+    }
 
     // ---- ENERGY geometry: ZPD = 0.65*HVT, raised to SNOWH by deep snow; ZLVL = MAX(ZPD,HVT) + ZREF,
     //      raised if the snow surface (ZPDG = SNOWH) reaches it; Z0MG blends bare soil and snow.
@@ -565,7 +805,7 @@ int bb6_build_canopy_input(pet_model *pet)
 
     // ---- radiation (ALBEDO, TWOSTREAM, SURRAD)
     NoahmpAlbedoInput *radiation = &input->canopy.radiation_stomata.radiation;
-    radiation->cosz = parameters->cosine_solar_zenith_angle;
+    radiation->cosz = COSZ;
     radiation->elai = leaf_area_index;
     radiation->esai = stem_area_index;
     radiation->fveg = green_vegetation_fraction;
@@ -582,8 +822,8 @@ int bb6_build_canopy_input(pet_model *pet)
         radiation->taul[band] = parameters->leaf_transmittance[band];
         radiation->taus[band] = parameters->stem_transmittance[band];
         // GROUNDALB: ALBGRD = ALBSOD*(1-FSNO) + ALBSND*FSNO, ALBGRI = ALBSOI*(1-FSNO) + ALBSNI*FSNO
-        radiation->albgrd[band] = parameters->soil_albedo_direct[band] * (1.0 - FSNO) + ALBSND[band] * FSNO;
-        radiation->albgri[band] = parameters->soil_albedo_diffuse[band] * (1.0 - FSNO) + ALBSNI[band] * FSNO;
+        radiation->albgrd[band] = ALBSOD[band] * (1.0 - FSNO) + ALBSND[band] * FSNO;
+        radiation->albgri[band] = ALBSOI[band] * (1.0 - FSNO) + ALBSNI[band] * FSNO;
     }
     radiation->solad[0] = downward_shortwave_w_per_m2 * parameters->direct_shortwave_fraction *
                           parameters->visible_shortwave_fraction;

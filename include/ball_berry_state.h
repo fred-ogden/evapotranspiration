@@ -54,6 +54,9 @@ typedef struct {
     double vegetation_temperature_start_of_step_K;    /* [TV]  */
     double canopy_air_temperature_start_of_step_K;    /* [TAH] */
     double canopy_air_vapor_pressure_start_of_step_Pa;/* [EAH] */
+    /* FLO 10/26: total soil moisture of the top disc, from the hydrologic model; used only with
+     * soil_albedo_option = 1 (GROUNDALB). NaN = not supplied. */
+    double soil_top_disc_moisture_content;            /* [SMC(1)] */
 } BallBerryCouplingInputs;
 
 /* FLO 10/21: calendar time of the current step, set by the BMI driver before each update.
@@ -83,7 +86,7 @@ typedef struct {
     double forcing_height_above_canopy_top_m;          /* [ZREF] */
     double characteristic_leaf_dimension_m;            /* [DLEAF] */
     double leaf_orientation_index;                     /* [XL] */
-    double cosine_solar_zenith_angle;                  /* [COSZ] fixed for now */
+    double cosine_solar_zenith_angle;                  /* [COSZ] fixed (solar_geometry_option = 0) */
     double direct_shortwave_fraction;                  /* 0.7 in Noah-MP ATM */
     double visible_shortwave_fraction;                 /* 0.5 in Noah-MP ATM */
     double soil_albedo_direct[2];                      /* [ALBSOD] snow-free, 0 = visible, 1 = near infrared */
@@ -110,6 +113,26 @@ typedef struct {
     double canopy_heat_capacity_per_unit_area_index_j_per_m2_k;   /* biomass heat capacity per unit ELAI+ESAI */
     double canopy_phase_change_window_k;               /* width w of the liquid fraction around TFRZ */
     double frozen_transpiration_ramp_k;                /* transpiration ramps to 0 over this span below TFRZ */
+    /* FLO 10/26: Noah-MP options for the decoupled stack (all optional keys; the defaults keep
+     * the behavior before 10/26, the NWM replica configuration) */
+    int    solar_geometry_option;                      /* 0: COSZ = cosine_solar_zenith_angle (fixed);
+                                                          1: COSZ from the BMI time inputs and the site
+                                                          (Noah-MP calc_declin, as NoahMP_snow_ablation) */
+    int    solar_geometry_at_end_of_step;              /* 1: COSZ at start of step + DT (NOM, NWM) */
+    double longitude_degrees;                          /* [lon] solar_geometry_option = 1 */
+    double terrain_slope_degrees;                      /* [terrain_slope] 0 for NWM (flat) */
+    double terrain_azimuth_degrees;                    /* [azimuth] clockwise from north */
+    int    dynamic_vegetation_option;                  /* 0: FVEG = SHDFAC as supplied; 1: DVEG = 1
+                                                          (FVEG = SHDFAC, at least 0.05); both: FVEG = 0
+                                                          when ELAI + ESAI = 0 */
+    int    surface_resistance_snow_blend_option;       /* 0: RSURF as supplied; 1: OPT_RSF = 4,
+                                                          RSURF = 1/(FSNO/RSURF_SNOW + (1-FSNO)/MAX(RSURF,0.001)) */
+    double surface_resistance_snow_s_per_m;            /* [RSURF_SNOW] MPTABLE 50 */
+    int    soil_albedo_option;                         /* 0: soil_albedo_direct/diffuse as configured;
+                                                          1: GROUNDALB, ALBSOD = ALBSOI = MIN(ALBSAT + INC, ALBDRY),
+                                                          INC = MAX(0.11 - 0.40*SMC(1), 0) */
+    double soil_albedo_saturated[2];                   /* [ALBSAT] by SOILCOLOR, 0 = visible, 1 = near infrared */
+    double soil_albedo_dry[2];                         /* [ALBDRY] */
 } BallBerryMethod6Parameters;
 
 /* FLO 10/21: BMI outputs of PET method 6 for the modules it is coupled to. NaN until
@@ -136,5 +159,9 @@ typedef struct {
                                                                consistent with the energy balance -> CIESM */
     double canopy_fusion_heat_flux_W_per_m2;                /* HFUS * freezing rate, + released to the canopy */
     double canopy_heat_storage_flux_W_per_m2;               /* C_v*(TV - TV0)/DT, + stored in the canopy */
+    /* FLO 10/26 */
+    double surface_resistance_with_snow_s_per_m;            /* [RSURF] after the snow blend -> SFT column */
+    double cosine_solar_zenith_angle;                       /* [COSZ] used this step */
+    double vegetated_fraction;                              /* [FVEG] used this step */
 } BallBerryCouplingOutputs;
 #endif

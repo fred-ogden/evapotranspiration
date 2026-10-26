@@ -23,12 +23,31 @@ int noahmp_albedo_radiation(const NoahmpAlbedoInput *in, NoahmpAlbedoOutput *out
         in->elai < 0.0 || in->esai < 0.0 || in->fveg < 0.0 ||
         in->fveg > 1.0 || in->fwet < 0.0 || in->fwet > 1.0) return 1;
     vai = in->elai + in->esai;
-    /* The existing TWOSTREAM port requires positive VAI and daylight. */
-    if (vai <= 0.0 || in->cosz <= 0.0 || in->cosz > 1.0) return 1;
+    /* The TWOSTREAM port requires positive VAI (no exposed canopy is handled by the caller). */
+    if (vai <= 0.0 || in->cosz > 1.0) return 1;
     memset(&result, 0, sizeof(result));
     memset(&tw_in, 0, sizeof(tw_in));
     memset(&tw_out, 0, sizeof(tw_out));
     rad = &result.radiation_inputs;
+    /* FLO 10/26: sun down: ALBEDO returns its zero initialization (IF(COSZ <= 0) GOTO 100), FSUN = 0,
+     * so LAISUN = 0, LAISHA = ELAI, and SURRAD absorbs nothing */
+    if (in->cosz <= 0.0) {
+        for (ib = 0; ib < 2; ib++) {
+            rad->solad[ib] = in->solad[ib];
+            rad->solai[ib] = in->solai[ib];
+        }
+        result.fsun = 0.0;
+        rad->fsun = 0.0;
+        rad->fsha = 1.0;
+        rad->elai = in->elai;
+        rad->vai = vai;
+        rad->laisun = 0.0;
+        rad->laisha = in->elai;
+        rad->mpe = mpe;
+        if (noahmp_surrad(rad, &result.radiation) != 0) return 1;
+        *out = result;
+        return 0;
+    }
     wl = in->elai / fmax(vai, mpe);
     ws = in->esai / fmax(vai, mpe);
     tw_in.cosz = in->cosz;

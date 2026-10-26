@@ -192,6 +192,30 @@ with CIESM Noah-MP physics, to the TV after the CIESM phase-change reset
 (`vegetation_temperature_after_phase_change_K`), which is the exact NWM sequence. With 0, every
 update cold-starts, as before 10/24.
 
+## Options for the decoupled Noah-MP stack (FLO 10/26)
+
+Optional keys; when absent, method 6 behaves as before (the NWM replica configuration). The
+stack configuration is `configs/ball_berry_noahmp_cat-18560.cfg` (cat-18560, USGS type 11).
+
+| Key | Values | Effect |
+|---|---|---|
+| solar_geometry_option | 0 (default), 1 | 1: COSZ from the BMI time inputs and the site (`latitude_degrees`, `longitude_degrees`, `terrain_slope_degrees`, `terrain_azimuth_degrees`), Noah-MP calc_declin as in NoahMP_snow_ablation; the shortwave is corrected to the slope as NOM ATM does (no change for zero slope); at night (COSZ <= 0) nothing is absorbed, as Noah-MP ALBEDO |
+| solar_geometry_at_end_of_step | 1 (default), 0 | 1: COSZ at start of step + DT, as NOM UtilitiesMain |
+| dynamic_vegetation_option | 0 (default), 1 | 1: DVEG = 1, FVEG = SHDFAC with a floor of 0.05 |
+| surface_resistance_snow_blend_option | 0 (default), 1 | 1: OPT_RSF = 4, RSURF = 1/(FSNO/RSURF_SNOW + (1-FSNO)/MAX(RSURF,0.001)); `surface_resistance_snow_s_per_m` (50) |
+| soil_albedo_option | 0 (default), 1 | 1: GROUNDALB, ALBSOD = ALBSOI = MIN(ALBSAT + MAX(0.11-0.40 SMC(1),0), ALBDRY) from the new BMI input `soil_top_disc_moisture_content` (`soil_albedo_saturated_*`, `soil_albedo_dry_*` by soil color) |
+
+Always on: with no exposed canopy (ELAI + ESAI = 0, buried by snow or bare) the update no longer
+fails. Noah-MP skips VEGE_FLUX: transpiration and canopy evaporation are 0, FVEG = 0, the ground
+absorbs the shortwave without a canopy, TAH is the air temperature and EAH the air vapor pressure
+(ATM), TV is not updated, and RAHG is written as 1 s/m (not used without a canopy). The snow
+albedo inputs may be 0 (the snow module sets them to 0 at night, as Noah-MP).
+
+New outputs: `surface_resistance_with_snow_s_per_m` (the RSURF used, for the sft-c Noah-MP column),
+`cosine_solar_zenith_angle`, `vegetated_fraction` (the FVEG used). ctests:
+`ball_berry_noahmp_options` (15 checks: COSZ at noon and night, the RSURF blend, the FVEG floor, the
+buried canopy, the soil albedo) and `bmi_unit_ball_berry_noahmp_cat-18560`.
+
 ## Model life cycle (method 6)
 
 Method 6 follows the BMI life cycle a model engine expects:

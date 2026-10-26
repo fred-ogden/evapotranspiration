@@ -97,7 +97,41 @@ extern int run_pet(pet_model* model)
     NoahmpStabilityOutput output;
     /* FLO 10/21: build this step's canopy input from the BMI forcing, time and coupling inputs
      * and the parameters read at Initialize (ball_berry_method6_inputs.c). */
-    if (bb6_build_canopy_input(model) != 0 || model->bb_stability_input_ready != TRUE) {
+    if (bb6_build_canopy_input(model) != 0) {
+      fprintf(stderr, "ERROR: PET method 6 could not build the canopy input for this step.\n");
+      return -1;
+    }
+    /* FLO 10/26: no exposed canopy (ELAI + ESAI = 0, buried by snow or bare): Noah-MP skips VEGE_FLUX.
+     * No transpiration or canopy evaporation; the ground absorbs SAG without a canopy and sees the
+     * downward longwave directly (EMV = 0); TAH, EAH as ATM sets them; TV is not updated. RAHG is not
+     * defined: 1 s/m is written (the SFT column uses it only under a canopy). */
+    if (model->bb_no_canopy_this_step == 1) {
+      BallBerryCouplingOutputs *coupling_outputs = &model->bb_coupling_outputs;
+      BallBerryCouplingInputs *coupling_inputs = &model->bb_coupling_inputs;
+      double TV = model->bb_no_canopy_vegetation_temperature_K;
+      coupling_outputs->canopy_transpiration_flux_m_per_s = 0.0;
+      coupling_outputs->canopy_evaporation_heat_flux_W_per_m2 = 0.0;
+      coupling_outputs->ground_shortwave_absorbed_below_canopy_W_per_m2 = model->bb_no_canopy_ground_shortwave_W_per_m2;
+      coupling_outputs->ground_longwave_absorbed_below_canopy_W_per_m2 =
+          model->bb_no_canopy_ground_emissivity * model->aorc.incoming_longwave_W_per_m2;
+      coupling_outputs->canopy_air_temperature_K = model->bb_no_canopy_air_temperature_K;
+      coupling_outputs->canopy_air_vapor_pressure_Pa = model->bb_no_canopy_air_vapor_pressure_Pa;
+      coupling_outputs->below_canopy_aerodynamic_resistance_s_per_m = 1.0;
+      coupling_outputs->vegetation_temperature_K = TV;
+      coupling_outputs->canopy_latent_heat_J_per_kg = (TV > 273.16) ? 2.5104e6 : 2.8440e6;
+      coupling_outputs->canopy_freezing_rate_mm_per_s = (model->bb_parameters.canopy_energy_physics_option == 2) ? 0.0 : NAN;
+      coupling_outputs->canopy_fusion_heat_flux_W_per_m2 = 0.0;
+      coupling_outputs->canopy_heat_storage_flux_W_per_m2 = 0.0;
+      if (model->bb_parameters.carry_canopy_state_between_steps == 1) {
+        coupling_inputs->vegetation_temperature_start_of_step_K = TV;
+        coupling_inputs->canopy_air_temperature_start_of_step_K = model->bb_no_canopy_air_temperature_K;
+        coupling_inputs->canopy_air_vapor_pressure_start_of_step_Pa = model->bb_no_canopy_air_vapor_pressure_Pa;
+      }
+      model->bb_transpiration_m_per_s = 0.0;
+      model->pet_m_per_s = 0.0;
+      return 0;
+    }
+    if (model->bb_stability_input_ready != TRUE) {
       fprintf(stderr, "ERROR: PET method 6 could not build the canopy input for this step.\n");
       return -1;
     }
