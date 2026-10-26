@@ -2,6 +2,27 @@ All notable changes to this project will be documented in this file.
 We follow the [Semantic Versioning 2.0.0](http://semver.org/) format.
 
 
+## Unreleased (feature/ball-berry-canopy-state) - 2026-10-24
+
+### Added
+
+- PET method 6: the canopy state TV, TAH, EAH is carried between steps
+  (`carry_canopy_state_between_steps = 1`), as Noah-MP carries it; exposed as the BMI inputs
+  `vegetation_temperature_start_of_step_K`, `canopy_air_temperature_start_of_step_K`,
+  `canopy_air_vapor_pressure_start_of_step_Pa` (hot start, or the CIESM Noah-MP reset TV).
+- PET method 6: `canopy_energy_physics_option = 2` (nested solver): canopy biomass heat capacity,
+  enthalpy-form fusion of intercepted water in the canopy energy balance, transpiration ramped to
+  zero below TFRZ, radiation at the start-of-step TV, the EVC water limit fixed by LATHEAV, and the
+  NWM outer-iteration rule. New outputs `canopy_freezing_rate_mm_per_s` (to CIESM canopy_storage),
+  `canopy_fusion_heat_flux_W_per_m2`, `canopy_heat_storage_flux_W_per_m2`.
+  `configs/ball_berry_revised_canopy_energy.cfg`; ctests `ball_berry_revised_canopy_energy` and
+  `bmi_unit_ball_berry_revised_canopy_energy`.
+
+### Changed
+
+- Option 1 (default) is unchanged except that the state is now carried: the exact solver still
+  matches NWM VEGE_FLUX (stored reference, r8, 2.9e-15) on the first step.
+
 ## Unreleased (feature/ciesm-coupling) - 2026-10-24
 
 ### Added

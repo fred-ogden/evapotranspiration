@@ -16,7 +16,7 @@
 //   5. time information       start, end, step, units, current time
 //   6. set_value              seven forcing variables and, for method 6, six time variables;
 //                             get_value must return what was set. Methods 1-5 expose 7 inputs
-//                             and 1 output; method 6 exposes 32 inputs and 10 outputs
+//                             and 1 output; method 6 exposes 35 inputs and 13 outputs
 //   7. update                 must succeed and advance the current time by one time step;
 //                             every output must be finite through get_value,
 //                             get_value_at_indices and get_value_ptr; methods 1-5 with the unit
@@ -82,7 +82,8 @@ static const RejectedInput method6_rejected_inputs[] = {
     { "LAI", -1.0 }, { "SAI", -1.0 }, { "SHDFAC", 1.2 }, { "CWP", -0.1 }, { "MP", -2.0 }, { "VCMX25", -3.0 },
     { "root_stress_factor_0_to_1", 1.5 }, { "snow_cover_fraction", -0.1 }, { "canopy_wetted_fraction", 1.1 },
     { "snow_depth_m", -1.0 }, { "time_month", 13.0 }, { "time_hour", 12.5 }, { "time_day_of_month", 0.0 },
-    { "precipitation_advected_heat_to_canopy_W_per_m2", 2.0e4 } };
+    { "precipitation_advected_heat_to_canopy_W_per_m2", 2.0e4 }, { "vegetation_temperature_start_of_step_K", 500.0 },
+    { "canopy_air_vapor_pressure_start_of_step_Pa", -1.0 } };
 
 static char *trim_text(char *text)
 {
@@ -295,10 +296,16 @@ int main(int argc, const char *argv[])
         double value = NAN, value_at_index = NAN, *value_pointer = NULL;
         int index_zero = 0;
         const char *name = output_names[variable];
-        check(model->get_value(model, name, &value) == BMI_SUCCESS && isfinite(value), "get_value is finite", name);
-        check(model->get_value_at_indices(model, name, &value_at_index, &index_zero, 1) == BMI_SUCCESS && value_at_index == value,
+        /* FLO 10/24: canopy_freezing_rate_mm_per_s is NaN by design with canopy_energy_physics_option = 1
+         * (not computed; CIESM canopy_storage then uses its own Noah-MP rate) */
+        int nan_allowed = (strcmp(name, "canopy_freezing_rate_mm_per_s") == 0);
+        int got_value = (model->get_value(model, name, &value) == BMI_SUCCESS);
+        check(got_value && (isfinite(value) || (nan_allowed && isnan(value))), "get_value is finite", name);
+        check(model->get_value_at_indices(model, name, &value_at_index, &index_zero, 1) == BMI_SUCCESS &&
+              (value_at_index == value || (isnan(value_at_index) && isnan(value))),
               "get_value_at_indices equals get_value", name);
-        check(model->get_value_ptr(model, name, (void **)&value_pointer) == BMI_SUCCESS && value_pointer != NULL && *value_pointer == value,
+        check(model->get_value_ptr(model, name, (void **)&value_pointer) == BMI_SUCCESS && value_pointer != NULL &&
+              (*value_pointer == value || (isnan(*value_pointer) && isnan(value))),
               "get_value_ptr points at the value", name);
         printf("  %-50s %.10e\n", name, value);
         if (pet_method >= 1 && pet_method <= 5 && strcmp(name, "water_potential_evaporation_flux") == 0 &&

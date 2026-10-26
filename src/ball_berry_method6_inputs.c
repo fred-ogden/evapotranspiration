@@ -165,6 +165,16 @@ int bb6_validate_coupling_inputs(const BallBerryCouplingInputs *coupling)
     // FLO 10/24: PAHV, any sign; NWM Noah-MP clamps it to +/-20 W m-2, the CIESM revised physics does not
     if (!isfinite(coupling->precipitation_advected_heat_to_canopy_W_per_m2) ||
         fabs(coupling->precipitation_advected_heat_to_canopy_W_per_m2) > 1.0e4) return -1;
+    // FLO 10/24: start-of-step canopy state, NaN = not known (cold start)
+    if (!isnan(coupling->vegetation_temperature_start_of_step_K) &&
+        !(coupling->vegetation_temperature_start_of_step_K > 150.0 &&
+          coupling->vegetation_temperature_start_of_step_K < 400.0)) return -1;
+    if (!isnan(coupling->canopy_air_temperature_start_of_step_K) &&
+        !(coupling->canopy_air_temperature_start_of_step_K > 150.0 &&
+          coupling->canopy_air_temperature_start_of_step_K < 400.0)) return -1;
+    if (!isnan(coupling->canopy_air_vapor_pressure_start_of_step_Pa) &&
+        !(coupling->canopy_air_vapor_pressure_start_of_step_Pa >= 0.0 &&
+          coupling->canopy_air_vapor_pressure_start_of_step_Pa < 2.0e4)) return -1;
     return 0;
 }
 
@@ -255,6 +265,13 @@ int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_
     parameters->initial_vegetation_temperature_k = configuration_real(&table, "initial_vegetation_temperature_k");
     parameters->initial_canopy_air_temperature_k = configuration_real(&table, "initial_canopy_air_temperature_k");
     parameters->initial_canopy_air_vapor_pressure_pa = configuration_real(&table, "initial_canopy_air_vapor_pressure_pa");
+    // FLO 10/24: canopy energy physics option and carried canopy state
+    parameters->canopy_energy_physics_option = (int)configuration_real(&table, "canopy_energy_physics_option");
+    parameters->carry_canopy_state_between_steps = (int)configuration_real(&table, "carry_canopy_state_between_steps");
+    parameters->canopy_heat_capacity_per_unit_area_index_j_per_m2_k =
+        configuration_real(&table, "canopy_heat_capacity_per_unit_area_index_J_per_m2_per_K");
+    parameters->canopy_phase_change_window_k = configuration_real(&table, "canopy_phase_change_window_k");
+    parameters->frozen_transpiration_ramp_k = configuration_real(&table, "frozen_transpiration_ramp_k");
 
     // ---- STOMATA physiology; MP and VCMX25 are also BMI variables (initial values here)
     pet->bb_stomata.bp = configuration_real(&table, "minimum_leaf_conductance_umol_per_m2_per_s");
@@ -291,6 +308,9 @@ int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_
     coupling->canopy_ice_mm = configuration_real(&table, "canopy_ice_mm");
     coupling->precipitation_advected_heat_to_canopy_W_per_m2 =
         configuration_real(&table, "precipitation_advected_heat_to_canopy_W_per_m2");   // FLO 10/24
+    coupling->vegetation_temperature_start_of_step_K = NAN;      // FLO 10/24: not known until the first update
+    coupling->canopy_air_temperature_start_of_step_K = NAN;
+    coupling->canopy_air_vapor_pressure_start_of_step_Pa = NAN;
 
     // ---- time inputs are set by the driver before each update; undefined until then
     pet->bb_time_inputs.time_year = NAN;
@@ -311,10 +331,41 @@ int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_
     coupling_outputs->below_canopy_aerodynamic_resistance_s_per_m = NAN;
     coupling_outputs->vegetation_temperature_K = NAN;
     coupling_outputs->canopy_latent_heat_J_per_kg = NAN;   // FLO 10/24
+    coupling_outputs->canopy_freezing_rate_mm_per_s = NAN;
+    coupling_outputs->canopy_fusion_heat_flux_W_per_m2 = NAN;
+    coupling_outputs->canopy_heat_storage_flux_W_per_m2 = NAN;
 
     if (table.lookup_failed) status = -1;
     free_configuration_table(&table);           // the parsed text is no longer needed
     if (status != 0) return -1;
+    // FLO 10/24: the revised canopy energy physics is built on the nested (fully converged) solver;
+    // the exact solver stays a line-by-line replica of NWM VEGE_FLUX
+    if (parameters->canopy_energy_physics_option != 1 && parameters->canopy_energy_physics_option != 2) {
+        fprintf(stderr, "ERROR: canopy_energy_physics_option must be 1 (Noah-MP) or 2 (revised)\n");
+        return -1;
+    }
+    if (parameters->carry_canopy_state_between_steps != 0 && parameters->carry_canopy_state_between_steps != 1) {
+        fprintf(stderr, "ERROR: carry_canopy_state_between_steps must be 0 or 1\n");
+        return -1;
+    }
+    if (parameters->canopy_energy_physics_option == 2) {
+        if (pet->bb_noahmp_exact_iteration == 1) {
+            fprintf(stderr, "ERROR: canopy_energy_physics_option = 2 needs bb_noahmp_exact_iteration = 0 "
+                            "(the exact solver is the NWM replica)\n");
+            return -1;
+        }
+        if (parameters->carry_canopy_state_between_steps != 1) {
+            fprintf(stderr, "ERROR: canopy_energy_physics_option = 2 needs carry_canopy_state_between_steps = 1 "
+                            "(the heat storage term needs the TV of the previous step)\n");
+            return -1;
+        }
+        if (!(parameters->canopy_heat_capacity_per_unit_area_index_j_per_m2_k >= 0.0) ||
+            !(parameters->canopy_phase_change_window_k > 0.0) || !(parameters->frozen_transpiration_ramp_k > 0.0)) {
+            fprintf(stderr, "ERROR: canopy_energy_physics_option = 2 needs canopy heat capacity >= 0, "
+                            "canopy_phase_change_window_k > 0 and frozen_transpiration_ramp_k > 0\n");
+            return -1;
+        }
+    }
     if (ball_berry_state_validate(&pet->bb_canopy) != 0) {
         fprintf(stderr, "ERROR: invalid leaf_area_index, stem_area_index or green_vegetation_fraction\n");
         return -1;
@@ -492,7 +543,7 @@ int bb6_build_canopy_input(pet_model *pet)
     if (ZPDG >= reference_height_m) reference_height_m = ZPDG + parameters->forcing_height_above_canopy_top_m;
     Z0MG = noahmp_bare_soil_roughness_m * (1.0 - FSNO) + FSNO * noahmp_snow_surface_roughness_m;
 
-    // ---- initial canopy state
+    // ---- initial canopy state: cold start (forcing or configured values) ...
     if (parameters->initialize_canopy_state_from_forcing == 1) {
         initial_vegetation_temperature_k = air_temperature_k;
         initial_canopy_air_temperature_k = air_temperature_k;
@@ -502,6 +553,13 @@ int bb6_build_canopy_input(pet_model *pet)
         initial_canopy_air_temperature_k = parameters->initial_canopy_air_temperature_k;
         initial_canopy_air_vapor_pressure_pa = parameters->initial_canopy_air_vapor_pressure_pa;
     }
+    // FLO 10/24: ... unless the start-of-step state is known (carried from the previous step or set)
+    if (!isnan(coupling->vegetation_temperature_start_of_step_K))
+        initial_vegetation_temperature_k = coupling->vegetation_temperature_start_of_step_K;
+    if (!isnan(coupling->canopy_air_temperature_start_of_step_K))
+        initial_canopy_air_temperature_k = coupling->canopy_air_temperature_start_of_step_K;
+    if (!isnan(coupling->canopy_air_vapor_pressure_start_of_step_Pa))
+        initial_canopy_air_vapor_pressure_pa = coupling->canopy_air_vapor_pressure_start_of_step_Pa;
     latent_heat_vegetation_j_per_kg = (initial_vegetation_temperature_k > noahmp_freezing_point_k) ?
         noahmp_latent_heat_vaporization_j_per_kg : noahmp_latent_heat_sublimation_j_per_kg;   // LATHEAV
 
@@ -579,6 +637,23 @@ int bb6_build_canopy_input(pet_model *pet)
     foliage->latent_heat_j_per_kg = latent_heat_vegetation_j_per_kg;
     foliage->timestep_s = pet->bmi.time_step_size_s;                                          // DT
     foliage->additional_heat_w_per_m2 = coupling->precipitation_advected_heat_to_canopy_W_per_m2;   // PAHV (FLO 10/24)
+
+    // ---- FLO 10/24: revised canopy energy physics (option 2). With option 1 these stay 0 (memset above),
+    //      which is exactly the Noah-MP calculation.
+    if (parameters->canopy_energy_physics_option == 2) {
+        // C_v = FVEG * c * (ELAI+ESAI) + heat capacity of the intercepted water (CANLIQ, CANICE per ground area)
+        foliage->canopy_heat_capacity_j_per_m2_k =
+            green_vegetation_fraction * parameters->canopy_heat_capacity_per_unit_area_index_j_per_m2_k *
+            vegetation_area_index + (4.188e6 * CANLIQ + 2.094e6 * CANICE) / 1000.0;   // CWAT, CICE (J m-3 K-1)
+        foliage->previous_foliage_temperature_k = initial_vegetation_temperature_k;
+        foliage->phase_change_window_k = parameters->canopy_phase_change_window_k;
+        foliage->canopy_water_total_mm = CANLIQ + CANICE;
+        foliage->canopy_liquid_start_mm = CANLIQ;
+        foliage->frozen_transpiration_ramp_k = parameters->frozen_transpiration_ramp_k;
+        foliage->evaporation_phase_from_latent_heat = 1;
+        input->canopy.hold_radiation_at_start_temperature = 1;
+        input->noahmp_outer_iteration_rule = 1;     // never fails in stable, calm air (see ball_berry_helpers.h)
+    }
 
     // ---- nested solver controls (ignored by the exact solver); defaults if not configured
     input->canopy.maximum_iterations = (solver->maximum_canopy_iterations >= 1.0) ? (int)solver->maximum_canopy_iterations : 60;

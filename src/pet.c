@@ -152,6 +152,25 @@ extern int run_pet(pet_model* model)
           output.ground_canopy.ground_heat_resistance_s_per_m;                                                   // RAHG
       coupling_outputs->vegetation_temperature_K = TV;                                                           // TV
       coupling_outputs->canopy_latent_heat_J_per_kg = canopy_inputs->latent_heat_j_per_kg;                       // LATHEAV (FLO 10/24)
+      // FLO 10/24: phase change and heat storage of the revised canopy energy physics, at the converged TV
+      if (model->bb_parameters.canopy_energy_physics_option == 2) {
+        coupling_outputs->canopy_freezing_rate_mm_per_s = canopy_fluxes->freezing_rate_mm_per_s;
+        coupling_outputs->canopy_fusion_heat_flux_W_per_m2 = canopy_fluxes->fusion_heat_w_per_m2;
+        coupling_outputs->canopy_heat_storage_flux_W_per_m2 = canopy_fluxes->heat_storage_w_per_m2;
+      } else {
+        coupling_outputs->canopy_freezing_rate_mm_per_s = NAN;     // CIESM uses its own Noah-MP rate
+        coupling_outputs->canopy_fusion_heat_flux_W_per_m2 = 0.0;
+        coupling_outputs->canopy_heat_storage_flux_W_per_m2 = 0.0;
+      }
+      // FLO 10/24: the canopy state at the end of this step is the state at the start of the next
+      {
+        BallBerryCouplingInputs *coupling_inputs = &model->bb_coupling_inputs;
+        if (model->bb_parameters.carry_canopy_state_between_steps == 1) {
+          coupling_inputs->vegetation_temperature_start_of_step_K = TV;
+          coupling_inputs->canopy_air_temperature_start_of_step_K = canopy_fluxes->canopy_air_temperature_k;
+          coupling_inputs->canopy_air_vapor_pressure_start_of_step_Pa = canopy_fluxes->canopy_air_vapor_pressure_pa;
+        }
+      }
     }
 
     // FLO 10/21: optional diagnostic summary of this update (Noah-MP names), for comparison with

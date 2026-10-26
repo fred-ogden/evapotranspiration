@@ -30,8 +30,8 @@ six files, then 4 the parameters of the method. The format is `key = value`, one
 CSV file that PET reads itself. Each instance of a PET model should have its own configuration file.
 
 The variables an instance exposes on its BMI depend on its method: methods 1-5 have the seven
-AORC forcing inputs and one output, `water_potential_evaporation_flux`; method 6 has 32 inputs
-(forcing, vegetation state, coupling inputs, calendar time) and 10 outputs.
+AORC forcing inputs and one output, `water_potential_evaporation_flux`; method 6 has 35 inputs
+(forcing, vegetation state, coupling inputs, calendar time) and 13 outputs.
 
 # Compiling and testing
 With CMake (shared library `petbmi` and all tests):
