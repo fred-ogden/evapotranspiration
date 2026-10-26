@@ -162,6 +162,9 @@ int bb6_validate_coupling_inputs(const BallBerryCouplingInputs *coupling)
     if (!(coupling->canopy_wetted_fraction >= 0.0 && coupling->canopy_wetted_fraction <= 1.0)) return -1;
     if (!(coupling->canopy_liquid_water_mm >= 0.0) || !isfinite(coupling->canopy_liquid_water_mm)) return -1;
     if (!(coupling->canopy_ice_mm >= 0.0) || !isfinite(coupling->canopy_ice_mm)) return -1;
+    // FLO 10/24: PAHV, any sign; NWM Noah-MP clamps it to +/-20 W m-2, the CIESM revised physics does not
+    if (!isfinite(coupling->precipitation_advected_heat_to_canopy_W_per_m2) ||
+        fabs(coupling->precipitation_advected_heat_to_canopy_W_per_m2) > 1.0e4) return -1;
     return 0;
 }
 
@@ -286,6 +289,8 @@ int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_
     coupling->canopy_wetted_fraction = configuration_real(&table, "canopy_wetted_fraction");
     coupling->canopy_liquid_water_mm = configuration_real(&table, "canopy_liquid_water_mm");
     coupling->canopy_ice_mm = configuration_real(&table, "canopy_ice_mm");
+    coupling->precipitation_advected_heat_to_canopy_W_per_m2 =
+        configuration_real(&table, "precipitation_advected_heat_to_canopy_W_per_m2");   // FLO 10/24
 
     // ---- time inputs are set by the driver before each update; undefined until then
     pet->bb_time_inputs.time_year = NAN;
@@ -305,6 +310,7 @@ int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_
     coupling_outputs->canopy_air_vapor_pressure_Pa = NAN;
     coupling_outputs->below_canopy_aerodynamic_resistance_s_per_m = NAN;
     coupling_outputs->vegetation_temperature_K = NAN;
+    coupling_outputs->canopy_latent_heat_J_per_kg = NAN;   // FLO 10/24
 
     if (table.lookup_failed) status = -1;
     free_configuration_table(&table);           // the parsed text is no longer needed
@@ -572,7 +578,7 @@ int bb6_build_canopy_input(pet_model *pet)
     foliage->canopy_ice_mm = CANICE;
     foliage->latent_heat_j_per_kg = latent_heat_vegetation_j_per_kg;
     foliage->timestep_s = pet->bmi.time_step_size_s;                                          // DT
-    foliage->additional_heat_w_per_m2 = 0.0;                                                  // PAHV
+    foliage->additional_heat_w_per_m2 = coupling->precipitation_advected_heat_to_canopy_W_per_m2;   // PAHV (FLO 10/24)
 
     // ---- nested solver controls (ignored by the exact solver); defaults if not configured
     input->canopy.maximum_iterations = (solver->maximum_canopy_iterations >= 1.0) ? (int)solver->maximum_canopy_iterations : 60;

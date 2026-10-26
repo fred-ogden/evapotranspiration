@@ -382,7 +382,8 @@ program noahmp_canopy_reference_driver
   cloud_water_mixing_ratio = 0.0
   grid_spacing_m           = 1000.0
   lowest_layer_thickness_m = 20.0
-  precipitation_heat_canopy_w_per_m2 = 0.0
+  ! FLO 10/24: PAHV from the configuration (CIESM canopy_interception supplies it in C)
+  precipitation_heat_canopy_w_per_m2 = get_required_real_value('precipitation_advected_heat_to_canopy_W_per_m2')
   precipitation_heat_ground_w_per_m2 = 0.0
   surface_mixing_ratio_kg_per_kg = specific_humidity_kg_per_kg
 

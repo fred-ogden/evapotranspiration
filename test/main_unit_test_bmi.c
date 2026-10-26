@@ -16,7 +16,7 @@
 //   5. time information       start, end, step, units, current time
 //   6. set_value              seven forcing variables and, for method 6, six time variables;
 //                             get_value must return what was set. Methods 1-5 expose 7 inputs
-//                             and 1 output; method 6 exposes 31 inputs and 9 outputs
+//                             and 1 output; method 6 exposes 32 inputs and 10 outputs
 //   7. update                 must succeed and advance the current time by one time step;
 //                             every output must be finite through get_value,
 //                             get_value_at_indices and get_value_ptr; methods 1-5 with the unit
@@ -81,7 +81,8 @@ typedef struct { const char *name; double rejected_value; } RejectedInput;
 static const RejectedInput method6_rejected_inputs[] = {
     { "LAI", -1.0 }, { "SAI", -1.0 }, { "SHDFAC", 1.2 }, { "CWP", -0.1 }, { "MP", -2.0 }, { "VCMX25", -3.0 },
     { "root_stress_factor_0_to_1", 1.5 }, { "snow_cover_fraction", -0.1 }, { "canopy_wetted_fraction", 1.1 },
-    { "snow_depth_m", -1.0 }, { "time_month", 13.0 }, { "time_hour", 12.5 }, { "time_day_of_month", 0.0 } };
+    { "snow_depth_m", -1.0 }, { "time_month", 13.0 }, { "time_hour", 12.5 }, { "time_day_of_month", 0.0 },
+    { "precipitation_advected_heat_to_canopy_W_per_m2", 2.0e4 } };
 
 static char *trim_text(char *text)
 {

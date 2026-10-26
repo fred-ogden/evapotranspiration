@@ -11,3 +11,8 @@ build/
 test/output/
 noahmp_comparison/build/
 noahmp_comparison/output/
+build-ball-berry/
+output/
+fred/
+noah-mp_test_case/
+*.patch
