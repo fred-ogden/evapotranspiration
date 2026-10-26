@@ -89,6 +89,32 @@ if(BUILD_TESTING AND CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
         set_tests_properties(bmi_unit_${configuration_name} PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     endforeach()
 
+    # FLO 10/24: revised canopy energy physics (canopy_energy_physics_option = 2): physics checks
+    # through the BMI, and the BMI unit test with that configuration.
+    add_executable(test_ball_berry_canopy_energy test/test_ball_berry_canopy_energy.c)
+    target_include_directories(test_ball_berry_canopy_energy PRIVATE include)
+    target_link_libraries(test_ball_berry_canopy_energy PRIVATE petbmi m)
+    set_target_properties(test_ball_berry_canopy_energy PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON)
+    add_test(NAME ball_berry_revised_canopy_energy
+        COMMAND test_ball_berry_canopy_energy configs/ball_berry_revised_canopy_energy.cfg)
+    set_tests_properties(ball_berry_revised_canopy_energy PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    add_test(NAME bmi_unit_ball_berry_revised_canopy_energy
+        COMMAND test_pet_bmi_unit configs/ball_berry_revised_canopy_energy.cfg)
+
+    # FLO 10/26: options for the decoupled Noah-MP stack (solar geometry, RSURF with snow, DVEG = 1,
+    # buried canopy, soil albedo from soil moisture), and the BMI unit test with that configuration.
+    add_executable(test_ball_berry_noahmp_options test/test_ball_berry_noahmp_options.c)
+    target_include_directories(test_ball_berry_noahmp_options PRIVATE include)
+    target_link_libraries(test_ball_berry_noahmp_options PRIVATE petbmi m)
+    set_target_properties(test_ball_berry_noahmp_options PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON)
+    add_test(NAME ball_berry_noahmp_options
+        COMMAND test_ball_berry_noahmp_options configs/ball_berry_noahmp_cat-18560.cfg)
+    set_tests_properties(ball_berry_noahmp_options PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    add_test(NAME bmi_unit_ball_berry_noahmp_cat-18560
+        COMMAND test_pet_bmi_unit configs/ball_berry_noahmp_cat-18560.cfg)
+    set_tests_properties(bmi_unit_ball_berry_noahmp_cat-18560 PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(bmi_unit_ball_berry_revised_canopy_energy PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+
     # Method 6 against the stored NWM Noah-MP (Fortran r8) results; needs bash and python3.
     if(NOT WIN32)
         add_test(NAME ball_berry_method6_vs_stored_noahmp_reference

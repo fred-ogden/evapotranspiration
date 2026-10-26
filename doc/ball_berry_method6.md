@@ -90,7 +90,7 @@ sets `bb_noahmp_exact_iteration` and the names of the summary and trace files fo
 | File | Contents |
 |---|---|
 | noahmp_comparison/output/C/c_summary_exact.csv, c_summary_nested.csv | C solution, Noah-MP names, one value per row (written by the model, key bb_diagnostic_summary_file) |
-| noahmp_comparison/output/C/c_bmi_outputs_exact.txt, c_bmi_outputs_nested.txt | the ten method 6 BMI outputs, as the driver received them with get_value |
+| noahmp_comparison/output/C/c_bmi_outputs_exact.txt, c_bmi_outputs_nested.txt | the thirteen method 6 BMI outputs, as the driver received them with get_value |
 | noahmp_comparison/output/C/configuration_exact.txt, configuration_nested.txt | the configuration each C solver mode read |
 | noahmp_comparison/output/C/c_canopy_iteration_trace_exact.csv | one row per canopy iteration (exact solver only) |
 | noahmp_comparison/output/Fortran/noahmp_canopy_reference_summary_r4.csv, _r8.csv | Fortran solution: name, value, units, description |
@@ -142,6 +142,79 @@ unless there is a reason to want the more fully converged answer.
 
 `bb_noahmp_compatibility = 1` makes the nested solver freeze the stomatal resistances at the
 first iteration, as Noah-MP does. The exact solver always does this.
+
+## Canopy energy physics options
+
+`canopy_energy_physics_option` selects the canopy energy equation. Option 1 is the default and
+the only one the exact solver runs.
+
+| | 1: Noah-MP | 2: revised (nested solver only) |
+|---|---|---|
+| canopy energy equation | SAV - IRC - SHC - EVC - TR + PAHV = 0 | C_v (TV - TV0)/DT = SAV - IRC - SHC - EVC - TR + PAHV + HFUS (CANLIQ0 - CANLIQ_end)/DT |
+| canopy heat capacity C_v | none | FVEG * c * (ELAI+ESAI) + (CWAT CANLIQ + CICE CANICE)/1000, c = `canopy_heat_capacity_per_unit_area_index_J_per_m2_per_K` (default 1000: leaf dry matter and leaf water, about 0.1 kg m-2 dry at 70 percent water, per unit area index) |
+| phase change of intercepted water | not in the energy balance (CIESM: Noah-MP rate, TV reset) | enthalpy form: CANLIQ_end = (CANLIQ0+CANICE0) * 0.5 (1 + tanh((TV - TFRZ)/w)), w = `canopy_phase_change_window_k` (0.25 K); output as `canopy_freezing_rate_mm_per_s` for CIESM |
+| transpiration below TFRZ | as above TFRZ (Noah-MP only changes the latent heat to HSUB) | conductance CTW times a logistic ramp, 98 percent at TFRZ, 2 percent at TFRZ - `frozen_transpiration_ramp_k` (1 K): frozen stomata are closed |
+| radiation | once per step, at TV0 (ENERGY) | the same, also inside the nested solver, so the TWOSTREAM TV > TFRZ snow-optics switch stays out of the Newton residual |
+| EVC water limit | CANLIQ if the iterate TV > TFRZ, else CANICE | the phase set by LATHEAV (from TV0) for the whole step |
+| outer (resistance) iteration | NWM rule (exact solver) | NWM rule: at most 20, exit one iteration after the converged TV changes by <= 0.01 K (from iteration 5), accepted; TV fully converged inside each |
+
+Every term is smooth in TV, and the energy balance closes at the solution (about 1e-9 W m-2 in
+the coupled tests). The fusion term is self-limiting: freezing releases heat that warms the
+canopy toward TFRZ, melting absorbs it. Because of the smoothing, phase change happens within
+about 2w of TFRZ: heavy canopy snow can partly melt while TV is up to about 0.15 K below TFRZ.
+
+Two findings worth knowing:
+
+- A canopy water film carries little latent heat: freezing 0.4 mm releases 37 W m-2 over an hour,
+  which raises TV by about 0.4 K on a marginal night and does not keep a clear 266 K night near
+  TFRZ (all the water freezes and TV falls toward the air temperature). The leaf heat capacity is
+  similarly small (about 2000 J m-2 K-1, 0.5 W m-2 K-1 over an hour). The value of option 2 is
+  energy conservation and smooth, differentiable behavior more than large changes in TV.
+- The fully converged outer iteration of the nested solver (bb_maximum_stability_iterations and
+  bb_stability_relative_tolerance, still used with option 1) runs away on calm, stable nights: RAHC
+  grows past 240 s m-1 with no fixed point reached, and the update fails. With option 1 and
+  carried state it fails in all three December files in `forcing/` (cat-27, cat-52, cat-67, at
+  2015-12-06 23:00). Option 2 uses the NWM outer rule instead and runs all three, and the 12 K
+  colder copy of cat-67 in the `ciesm` repository.
+
+`test/test_ball_berry_canopy_energy.c` (ctest ball_berry_revised_canopy_energy) checks the energy
+closure, the carried state, freezing on a marginal night, melting, the transpiration ramp, and that
+TV and the freezing rate change smoothly with PAHV through a freeze.
+
+## Canopy state between steps
+
+`carry_canopy_state_between_steps = 1` (both options): at the end of each update TV, TAH and EAH
+are written to the BMI inputs `vegetation_temperature_start_of_step_K`,
+`canopy_air_temperature_start_of_step_K` and `canopy_air_vapor_pressure_start_of_step_Pa`, and the
+next update starts from them, as Noah-MP carries them. They are NaN until the first update, which
+cold-starts (`initialize_canopy_state_from_forcing`). A driver may set them: for a hot start, or,
+with CIESM Noah-MP physics, to the TV after the CIESM phase-change reset
+(`vegetation_temperature_after_phase_change_K`), which is the exact NWM sequence. With 0, every
+update cold-starts, as before 10/24.
+
+## Options for the decoupled Noah-MP stack (FLO 10/26)
+
+Optional keys; when absent, method 6 behaves as before (the NWM replica configuration). The
+stack configuration is `configs/ball_berry_noahmp_cat-18560.cfg` (cat-18560, USGS type 11).
+
+| Key | Values | Effect |
+|---|---|---|
+| solar_geometry_option | 0 (default), 1 | 1: COSZ from the BMI time inputs and the site (`latitude_degrees`, `longitude_degrees`, `terrain_slope_degrees`, `terrain_azimuth_degrees`), Noah-MP calc_declin as in NoahMP_snow_ablation; the shortwave is corrected to the slope as NOM ATM does (no change for zero slope); at night (COSZ <= 0) nothing is absorbed, as Noah-MP ALBEDO |
+| solar_geometry_at_end_of_step | 1 (default), 0 | 1: COSZ at start of step + DT, as NOM UtilitiesMain |
+| dynamic_vegetation_option | 0 (default), 1 | 1: DVEG = 1, FVEG = SHDFAC with a floor of 0.05 |
+| surface_resistance_snow_blend_option | 0 (default), 1 | 1: OPT_RSF = 4, RSURF = 1/(FSNO/RSURF_SNOW + (1-FSNO)/MAX(RSURF,0.001)); `surface_resistance_snow_s_per_m` (50) |
+| soil_albedo_option | 0 (default), 1 | 1: GROUNDALB, ALBSOD = ALBSOI = MIN(ALBSAT + MAX(0.11-0.40 SMC(1),0), ALBDRY) from the new BMI input `soil_top_disc_moisture_content` (`soil_albedo_saturated_*`, `soil_albedo_dry_*` by soil color) |
+
+Always on: with no exposed canopy (ELAI + ESAI = 0, buried by snow or bare) the update no longer
+fails. Noah-MP skips VEGE_FLUX: transpiration and canopy evaporation are 0, FVEG = 0, the ground
+absorbs the shortwave without a canopy, TAH is the air temperature and EAH the air vapor pressure
+(ATM), TV is not updated, and RAHG is written as 1 s/m (not used without a canopy). The snow
+albedo inputs may be 0 (the snow module sets them to 0 at night, as Noah-MP).
+
+New outputs: `surface_resistance_with_snow_s_per_m` (the RSURF used, for the sft-c Noah-MP column),
+`cosine_solar_zenith_angle`, `vegetated_fraction` (the FVEG used). ctests:
+`ball_berry_noahmp_options` (15 checks: COSZ at noon and night, the RSURF blend, the FVEG floor, the
+buried canopy, the soil albedo) and `bmi_unit_ball_berry_noahmp_cat-18560`.
 
 ## Model life cycle (method 6)
 
@@ -277,6 +350,9 @@ set, and an update that needs them before they are set fails with a message.
 | canopy_liquid_water_mm | CANLIQ | mm | CIESM |
 | canopy_ice_mm | CANICE | mm | CIESM |
 | precipitation_advected_heat_to_canopy_W_per_m2 | PAHV | W m-2 | CIESM canopy_interception; added to the canopy energy balance (B in VEGE_FLUX) |
+| vegetation_temperature_start_of_step_K | TV | K | this module (carried), or a driver: hot start, or the CIESM Noah-MP reset TV |
+| canopy_air_temperature_start_of_step_K | TAH | K | as above |
+| canopy_air_vapor_pressure_start_of_step_Pa | EAH | Pa | as above |
 | time_year | | year | driver |
 | time_month | | month (1 to 12) | driver |
 | time_day_of_month | | d (1 to 31) | driver |
@@ -298,6 +374,9 @@ set, and an update that needs them before they are set fails with a message.
 | below_canopy_aerodynamic_resistance_s_per_m | RAHG (= RAWG) | s m-1 | SFT, bare soil evaporation |
 | vegetation_temperature_K | TV | K | CIESM, snow module |
 | canopy_latent_heat_J_per_kg | LATHEAV | J kg-1 | CIESM canopy_storage: HVAP or HSUB, the latent heat used for EVC and TR |
+| canopy_freezing_rate_mm_per_s | (QFRZC - QMELTC) | mm s-1 | CIESM canopy_storage; option 2 only, NaN with option 1 |
+| canopy_fusion_heat_flux_W_per_m2 | | W m-2 | diagnostic: HFUS times the freezing rate, + released to the canopy (0 with option 1) |
+| canopy_heat_storage_flux_W_per_m2 | | W m-2 | diagnostic: C_v (TV - TV0)/DT, + stored (0 with option 1) |
 
 Conventions:
 
@@ -359,8 +438,9 @@ Conventions:
 3. BTRAN and RSURF are inputs instead of computed from Noah-MP's soil moisture.
 4. FSNO, SNOWH, FWET, CANLIQ and CANICE are inputs instead of computed by the snow and canopy
    water routines.
-5. Cold start: TV = TAH = TMP and EAH = the air vapor pressure. Because STOMATA is called only on
-   canopy iteration 1, RSSUN and RSSHA depend directly on these initial values.
+5. First step: cold start, TV = TAH = TMP and EAH = the air vapor pressure. Because STOMATA is
+   called only on canopy iteration 1, RSSUN and RSSHA depend directly on these initial values.
+   After that the state is carried (see "Canopy state between steps").
 6. ZLVL = HVT + ZREF with ZREF = 2 m, so the forcing is 10 m above the ground. NWM with a ZLVL
    namelist value of 10 m would place it at HVT + 10 m = 18 m.
 7. COSZ is fixed by the configuration.
@@ -420,12 +500,14 @@ the vapor pressure deficit term in STOMATA. A drier, warmer case is the next tes
 ## Running more than one time step
 
 `make_and_run_pass_forcings.sh` runs method 6 for 100 hourly AORC steps, with the calendar time
-inputs set by the driver. Until the two items below are done, those steps are a test of the
-coupling, not a Noah-MP simulation:
+inputs set by the driver. The canopy state is carried between steps. Until the item below is
+done, those steps are a test of the coupling, not a Noah-MP simulation:
 
 - `cosine_solar_zenith_angle` is a fixed configuration value. It should be computed each step from
   the time inputs and the site latitude and longitude.
-- The canopy state is not carried between steps (below).
+
+The `ciesm` repository runs method 6 coupled with CIESM canopy interception and storage over 720
+hourly AORC steps, with both physics options.
 
 ## Known issues, not yet changed
 
@@ -433,11 +515,11 @@ coupling, not a Noah-MP simulation:
   at the final TV, so the reported photosynthesis differs from Noah-MP. Transpiration is not
   affected. The compare script therefore reports PSNSUN as the largest difference for the
   nested mode.
-- The canopy state (TV, TAH, EAH) is not carried from one time step to the next: every update is
-  a cold start (TV = TAH = air temperature, EAH = air vapor pressure), or uses the configured
-  initial values. Noah-MP carries them as prognostic state, and because STOMATA uses the incoming
-  TV and EAH, multi-step runs will differ from Noah-MP until they are carried. This is the next
-  change needed before multi-step runs.
+- With canopy_energy_physics_option = 1, the nested solver can fail on calm, stable nights (see
+  "Canopy energy physics options"). Use the exact solver for option 1.
+- Ball-Berry fails when the canopy is fully buried by snow (ELAI + ESAI = 0); Noah-MP then skips
+  the vegetated flux calculation. A driver must skip the update, or this module should return zero
+  canopy fluxes; not yet decided.
 - `parse_aorc_line_pet` does not subtract 1 from tm_mon and uses local-time mktime, so the stored
   forcing time is off by a month. Only methods 1 to 5 (file forcing) use it; method 6 gets its
   time through the BMI. The AORC BMI module (`extern/forcing_code`, `aorc.c`) has the same bug, so

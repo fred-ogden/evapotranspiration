@@ -23,12 +23,31 @@ int noahmp_albedo_radiation(const NoahmpAlbedoInput *in, NoahmpAlbedoOutput *out
         in->elai < 0.0 || in->esai < 0.0 || in->fveg < 0.0 ||
         in->fveg > 1.0 || in->fwet < 0.0 || in->fwet > 1.0) return 1;
     vai = in->elai + in->esai;
-    /* The existing TWOSTREAM port requires positive VAI and daylight. */
-    if (vai <= 0.0 || in->cosz <= 0.0 || in->cosz > 1.0) return 1;
+    /* The TWOSTREAM port requires positive VAI (no exposed canopy is handled by the caller). */
+    if (vai <= 0.0 || in->cosz > 1.0) return 1;
     memset(&result, 0, sizeof(result));
     memset(&tw_in, 0, sizeof(tw_in));
     memset(&tw_out, 0, sizeof(tw_out));
     rad = &result.radiation_inputs;
+    /* FLO 10/26: sun down: ALBEDO returns its zero initialization (IF(COSZ <= 0) GOTO 100), FSUN = 0,
+     * so LAISUN = 0, LAISHA = ELAI, and SURRAD absorbs nothing */
+    if (in->cosz <= 0.0) {
+        for (ib = 0; ib < 2; ib++) {
+            rad->solad[ib] = in->solad[ib];
+            rad->solai[ib] = in->solai[ib];
+        }
+        result.fsun = 0.0;
+        rad->fsun = 0.0;
+        rad->fsha = 1.0;
+        rad->elai = in->elai;
+        rad->vai = vai;
+        rad->laisun = 0.0;
+        rad->laisha = in->elai;
+        rad->mpe = mpe;
+        if (noahmp_surrad(rad, &result.radiation) != 0) return 1;
+        *out = result;
+        return 0;
+    }
     wl = in->elai / fmax(vai, mpe);
     ws = in->esai / fmax(vai, mpe);
     tw_in.cosz = in->cosz;
@@ -152,6 +171,11 @@ static int canopy_evaluate_with_resistance(const NoahmpCanopyIterativeInput *in,
                     &slope) != 0) return -1;
     foliage.foliage_saturation_slope_pa_per_k = slope;
     radiation.radiation.tv_k = foliage_temperature_k;
+    if (in->hold_radiation_at_start_temperature) {
+        /* FLO 10/24: Noah-MP ENERGY calls RADIATION once, at the TV of the start of the step. Holding
+         * it there also keeps the TWOSTREAM TV > TFRZ snow-optics switch out of the Newton residual. */
+        radiation.radiation.tv_k = in->foliage.previous_foliage_temperature_k;
+    }
     radiation.canopy_air.tv = foliage_temperature_k;
     radiation.canopy_air.ei = foliage.foliage_saturation_vapor_pressure_pa;
     radiation.canopy_air.rb = foliage.rb_s_per_m;
@@ -655,6 +679,9 @@ int noahmp_stability_coupled_solve(const NoahmpStabilityInput *input,
     int i;
     double first_rs_sun = 0.0;
     double first_rs_shade = 0.0;
+    double vegetation_temperature_at_iteration_start_k;     /* FLO 10/24: NWM outer rule */
+    int noahmp_last_iteration_flag = 0;
+    int maximum_outer_iterations;
     if (input == NULL || output == NULL ||
         input->maximum_stability_iterations < 2 ||
         input->maximum_stability_iterations > 100 ||
@@ -665,7 +692,10 @@ int noahmp_stability_coupled_solve(const NoahmpStabilityInput *input,
     sf = input->surface_layer;
     rg = input->ground_canopy;
     canopy_air_temperature = canopy.foliage.air_temperature_k;
-    for (i = 1; i <= input->maximum_stability_iterations; ++i) {
+    maximum_outer_iterations = input->maximum_stability_iterations;
+    if (input->noahmp_outer_iteration_rule) maximum_outer_iterations = 20;      /* NITERC */
+    for (i = 1; i <= maximum_outer_iterations; ++i) {
+        vegetation_temperature_at_iteration_start_k = canopy.foliage.foliage_temperature_k;
         sf.iteration = i;
         sf.sensible_heat_w_per_m2 = sensible_heat;
         if (noahmp_sfcdif1(&sf, &sf_state, &candidate.surface_layer) != 0) return -1;
@@ -720,7 +750,18 @@ int noahmp_stability_coupled_solve(const NoahmpStabilityInput *input,
              (canopy.foliage.ground_temperature_k - canopy_air_temperature) /
              canopy.foliage.rahg_s_per_m;
         sensible_heat += ground_sensible_heat;
-        if (i > 1) {
+        if (input->noahmp_outer_iteration_rule) {
+            /* FLO 10/24: NWM loop1 exit rule, on the change of the converged TV over this iteration */
+            double temperature_change_k = candidate.canopy.foliage.foliage_temperature_k -
+                                          vegetation_temperature_at_iteration_start_k;
+            if (i > 1) {
+                change = fmax(fabs(rahc-previous_rahc)/fmax(rahc, 1.0),
+                              fabs(canopy.foliage.rahg_s_per_m-previous_rahg)/fmax(fabs(canopy.foliage.rahg_s_per_m),1.0));
+            }
+            if (noahmp_last_iteration_flag == 1) break;
+            if (i >= 5 && fabs(temperature_change_k) <= 0.01) noahmp_last_iteration_flag = 1;
+            if (i == maximum_outer_iterations) break;               /* accepted, as NWM */
+        } else if (i > 1) {
             double c1 = fabs(rahc-previous_rahc)/fmax(rahc, 1.0);
             double c2 = fabs(canopy.foliage.rahg_s_per_m-previous_rahg)/
                         fmax(fabs(canopy.foliage.rahg_s_per_m),1.0);
@@ -734,7 +775,7 @@ int noahmp_stability_coupled_solve(const NoahmpStabilityInput *input,
         previous_rb = canopy.foliage.rb_s_per_m;
         canopy.foliage.foliage_temperature_k = candidate.canopy.foliage.foliage_temperature_k;
     }
-    if (i > input->maximum_stability_iterations) return -1;
+    if (!input->noahmp_outer_iteration_rule && i > input->maximum_stability_iterations) return -1;
     candidate.stability_iterations = i;
     candidate.relative_resistance_change = change;
     candidate.reference_canopy_resistance_s_per_m = rahc;
@@ -924,6 +965,10 @@ int noahmp_vege_flux_foliage_step(const NoahmpVegeFluxInputs *in,
     double caw, cew, ctw, cgw, aea, bea, cev, ctr;
     double air_term, cir, residual, jacobian, dtv, tv, estv, tah, eah;
     double irc, shc, evc, tr, latent_limit;
+    double transpiration_ramp_factor, heat_storage, fusion_heat, liquid_end_mm, freezing_rate;
+    double tanh_argument, tanh_value, ramp_center_k, ramp_scale_k;
+    const double freezing_point_k = 273.16;            /* TFRZ */
+    const double latent_heat_fusion_j_per_kg = 0.3336e6;   /* HFUS */
     NoahmpVegeFluxOutputs result;
     if (in == 0 || out == 0) return -1;
     if (!(in->fveg > 0.0 && in->fveg <= 1.0 && in->vai >= 0.0 &&
@@ -939,6 +984,9 @@ int noahmp_vege_flux_foliage_step(const NoahmpVegeFluxInputs *in,
           in->vegetation_emissivity >= 0.0 && in->vegetation_emissivity <= 1.0 &&
           in->ground_emissivity >= 0.0 && in->ground_emissivity <= 1.0 &&
           in->stefan_boltzmann_w_per_m2_k4 > 0.0)) return -1;
+    if (!(in->canopy_heat_capacity_j_per_m2_k >= 0.0) || !(in->phase_change_window_k >= 0.0) ||
+        !(in->frozen_transpiration_ramp_k >= 0.0) || !(in->canopy_water_total_mm >= 0.0) ||
+        !(in->canopy_liquid_start_mm >= 0.0)) return -1;
     tv = in->foliage_temperature_k;
     estv = in->foliage_saturation_vapor_pressure_pa;
     cah = 1.0 / in->rahc_s_per_m;
@@ -953,6 +1001,15 @@ int noahmp_vege_flux_foliage_step(const NoahmpVegeFluxInputs *in,
     ctw = (1.0 - in->wet_fraction) *
           (fmin(6.0, in->lai_sun) / (in->rb_s_per_m + in->rs_sun_s_per_m) +
            fmin(6.0, in->lai_shade) / (in->rb_s_per_m + in->rs_shade_s_per_m));
+    /* FLO 10/24: frozen canopy, stomata closed: CTW ramps smoothly to 0 below TFRZ (logistic centered
+     * half way down the span, 98 percent open at TFRZ, 2 percent at TFRZ - span). */
+    transpiration_ramp_factor = 1.0;
+    if (in->frozen_transpiration_ramp_k > 0.0) {
+        ramp_center_k = freezing_point_k - 0.5 * in->frozen_transpiration_ramp_k;
+        ramp_scale_k = in->frozen_transpiration_ramp_k / 8.0;
+        transpiration_ramp_factor = 1.0 / (1.0 + exp(-(tv - ramp_center_k) / ramp_scale_k));
+        ctw = ctw * transpiration_ramp_factor;
+    }
     cgw = 1.0 / (in->rawg_s_per_m + in->rsurf_s_per_m);
     cond = caw + cew + ctw + cgw;
     aea = (in->air_vapor_pressure_pa * caw +
@@ -977,12 +1034,48 @@ int noahmp_vege_flux_foliage_step(const NoahmpVegeFluxInputs *in,
           (estv - eah) / in->psychrometric_constant_pa_per_k;
     tr = in->fveg * in->air_density_kg_per_m3 * in->cp_air_j_per_kg_k * ctw *
          (estv - eah) / in->psychrometric_constant_pa_per_k;
-    if (tv > 273.16) latent_limit = in->canopy_liquid_mm * in->latent_heat_j_per_kg / in->timestep_s;
-    else latent_limit = in->canopy_ice_mm * in->latent_heat_j_per_kg / in->timestep_s;
+    if (in->evaporation_phase_from_latent_heat) {
+        /* FLO 10/24: the phase that evaporates is the one the latent heat was chosen for (HSUB: ice),
+         * fixed for the step, so the limit does not switch as the iterate TV crosses TFRZ */
+        if (in->latent_heat_j_per_kg > 0.5 * (2.5104e6 + 2.8440e6)) {
+            latent_limit = in->canopy_ice_mm * in->latent_heat_j_per_kg / in->timestep_s;
+        } else {
+            latent_limit = in->canopy_liquid_mm * in->latent_heat_j_per_kg / in->timestep_s;
+        }
+    } else if (tv > 273.16) {
+        latent_limit = in->canopy_liquid_mm * in->latent_heat_j_per_kg / in->timestep_s;
+    } else {
+        latent_limit = in->canopy_ice_mm * in->latent_heat_j_per_kg / in->timestep_s;
+    }
     evc = fmin(latent_limit, evc);
     residual = in->absorbed_shortwave_w_per_m2 - irc - shc - evc - tr + in->additional_heat_w_per_m2;
     jacobian = in->fveg * (4.0 * cir * pow(tv, 3.0) + csh +
                (cev + ctr) * in->foliage_saturation_slope_pa_per_k);
+    /* FLO 10/24: canopy heat storage, C_v*(TV - TV0)/DT, removed from the net heating */
+    heat_storage = 0.0;
+    if (in->canopy_heat_capacity_j_per_m2_k > 0.0) {
+        heat_storage = in->canopy_heat_capacity_j_per_m2_k * (tv - in->previous_foliage_temperature_k) /
+                       in->timestep_s;
+        residual = residual - heat_storage;
+        jacobian = jacobian + in->canopy_heat_capacity_j_per_m2_k / in->timestep_s;
+    }
+    /* FLO 10/24: phase change of intercepted water (enthalpy form). At the end of the step the liquid
+     * is (CANLIQ0+CANICE0)*0.5*(1+tanh((TV-TFRZ)/w)); the fusion heat HFUS*(CANLIQ0 - CANLIQ_end)/DT
+     * (+ released by freezing) enters the canopy energy balance. It is self-limiting: freezing warms the
+     * canopy toward TFRZ, melting cools it. Smooth in TV, and exactly energy conserving. */
+    fusion_heat = 0.0;
+    freezing_rate = 0.0;
+    liquid_end_mm = in->canopy_liquid_start_mm;
+    if (in->phase_change_window_k > 0.0 && in->canopy_water_total_mm > 0.0) {
+        tanh_argument = (tv - freezing_point_k) / in->phase_change_window_k;
+        tanh_value = tanh(tanh_argument);
+        liquid_end_mm = in->canopy_water_total_mm * 0.5 * (1.0 + tanh_value);
+        freezing_rate = (in->canopy_liquid_start_mm - liquid_end_mm) / in->timestep_s;
+        fusion_heat = latent_heat_fusion_j_per_kg * freezing_rate;      /* mm/s = kg m-2 s-1 */
+        residual = residual + fusion_heat;
+        jacobian = jacobian + latent_heat_fusion_j_per_kg * in->canopy_water_total_mm * 0.5 *
+                   (1.0 - tanh_value * tanh_value) / in->phase_change_window_k / in->timestep_s;
+    }
     if (!isfinite(jacobian) || fabs(jacobian) < 1e-15) return -1;
     dtv = residual / jacobian;
     result.energy_balance_residual_w_per_m2 = residual;
@@ -998,6 +1091,11 @@ int noahmp_vege_flux_foliage_step(const NoahmpVegeFluxInputs *in,
     result.foliage_temperature_increment_k = dtv;
     result.updated_foliage_temperature_k = tv + dtv;
     result.transpiration_conductance_m_per_s = ctw;
+    result.heat_storage_w_per_m2 = heat_storage;
+    result.fusion_heat_w_per_m2 = fusion_heat;
+    result.canopy_liquid_end_mm = liquid_end_mm;
+    result.freezing_rate_mm_per_s = freezing_rate;
+    result.transpiration_ramp_factor = transpiration_ramp_factor;
     if (!isfinite(result.transpiration_w_per_m2) || !isfinite(dtv)) return -1;
     *out = result;
     return 0;

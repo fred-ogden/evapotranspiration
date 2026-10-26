@@ -28,7 +28,7 @@ Each run calls every BMI function and checks what it returns:
 | method 6 validation | out-of-range and NaN inputs (LAI, SHDFAC, root_stress_factor_0_to_1, time_month, ...) are rejected and leave the value unchanged |
 
 Methods 1-5 expose 7 inputs (the AORC forcing) and 1 output (`water_potential_evaporation_flux`).
-Method 6 exposes 32 inputs (forcing, vegetation state, coupling, time) and 10 outputs.
+Method 6 exposes 35 inputs (forcing, vegetation state, coupling, canopy state, time) and 13 outputs.
 
 ## Other tests
 

@@ -14,8 +14,8 @@
 #include "../include/bmi.h"
 #include "../include/bmi_pet.h"
 
-#define INPUT_VAR_NAME_COUNT 32 // FLO 10/24: 7 AORC forcings, 6 Ball-Berry state/parameters, 13 coupling inputs, 6 time inputs
-#define OUTPUT_VAR_NAME_COUNT 10 // FLO 10/24: PET plus 9 Ball-Berry coupling outputs
+#define INPUT_VAR_NAME_COUNT 36 // FLO 10/26: 7 AORC forcings, 6 Ball-Berry state/parameters, 13 coupling inputs, 3 canopy state, 6 time inputs, top-disc soil moisture
+#define OUTPUT_VAR_NAME_COUNT 16 // FLO 10/26: PET plus 15 Ball-Berry coupling outputs
 
 // Remove leading and trailing whitespace from a string in place.
 // Returns a pointer to the first non-whitespace character.
@@ -446,11 +446,23 @@ static const char *output_var_names[OUTPUT_VAR_NAME_COUNT] = {
     "canopy_air_vapor_pressure_Pa",
     "below_canopy_aerodynamic_resistance_s_per_m",
     "vegetation_temperature_K",
-    "canopy_latent_heat_J_per_kg"
+    "canopy_latent_heat_J_per_kg",
+    "canopy_freezing_rate_mm_per_s",
+    "canopy_fusion_heat_flux_W_per_m2",
+    "canopy_heat_storage_flux_W_per_m2",
+    "surface_resistance_with_snow_s_per_m",
+    "cosine_solar_zenith_angle",
+    "vegetated_fraction"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *output_var_types[OUTPUT_VAR_NAME_COUNT] = {
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
     "double",
     "double",
     "double",
@@ -474,6 +486,12 @@ static const int output_var_item_count[OUTPUT_VAR_NAME_COUNT] = {
     1,
     1,
     1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
     1
 };
 
@@ -488,11 +506,23 @@ static const char *output_var_units[OUTPUT_VAR_NAME_COUNT] = {
     "Pa",
     "s m-1",
     "K",
-    "J kg-1"
+    "J kg-1",
+    "mm s-1",
+    "W m-2",
+    "W m-2",
+    "s m-1",
+    "1",
+    "1"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const int output_var_grids[OUTPUT_VAR_NAME_COUNT] = {
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
     0,
     0,
     0,
@@ -516,11 +546,21 @@ static const char *output_var_locations[OUTPUT_VAR_NAME_COUNT] = {
     "node",
     "node",
     "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
     "node"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const int input_var_item_count[INPUT_VAR_NAME_COUNT] = {
+    1,
+    1,
+    1,
+    1,
     1,
     1,
     1,
@@ -588,11 +628,19 @@ static const char input_var_grids[INPUT_VAR_NAME_COUNT] = {
     0,
     0,
     0,
+    0,
+    0,
+    0,
+    0,
     0
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *input_var_locations[INPUT_VAR_NAME_COUNT] = {
+    "node",
+    "node",
+    "node",
+    "node",
     "node",
     "node",
     "node",
@@ -660,16 +708,24 @@ static const char *input_var_names[INPUT_VAR_NAME_COUNT] = {
     "canopy_liquid_water_mm",
     "canopy_ice_mm",
     "precipitation_advected_heat_to_canopy_W_per_m2",
+    "vegetation_temperature_start_of_step_K",
+    "canopy_air_temperature_start_of_step_K",
+    "canopy_air_vapor_pressure_start_of_step_Pa",
     "time_year",
     "time_month",
     "time_day_of_month",
     "time_hour",
     "time_minute",
-    "time_second"
+    "time_second",
+    "soil_top_disc_moisture_content"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *input_var_types[INPUT_VAR_NAME_COUNT] = {
+    "double",
+    "double",
+    "double",
+    "double",
     "double",
     "double",
     "double",
@@ -732,12 +788,16 @@ static const char *input_var_units[INPUT_VAR_NAME_COUNT] = {
     "mm",
     "mm",
     "W m-2",
+    "K",
+    "K",
+    "Pa",
     "year",
     "month",
     "d",
     "h",
     "min",
-    "s"
+    "s",
+    "m3 m-3"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
@@ -1416,6 +1476,15 @@ static int Get_value_ptr (Bmi *self, const char *name, void **dest)
     if (strcmp(name, "canopy_ice_mm") == 0) { *dest = &coupling->canopy_ice_mm; return BMI_SUCCESS; }                             /* CANICE */
     if (strcmp(name, "precipitation_advected_heat_to_canopy_W_per_m2") == 0) {                                                     /* PAHV, FLO 10/24 */
         *dest = &coupling->precipitation_advected_heat_to_canopy_W_per_m2; return BMI_SUCCESS; }
+    /* FLO 10/24: canopy state at the start of the step [TV, TAH, EAH] */
+    if (strcmp(name, "vegetation_temperature_start_of_step_K") == 0) {
+        *dest = &coupling->vegetation_temperature_start_of_step_K; return BMI_SUCCESS; }
+    if (strcmp(name, "canopy_air_temperature_start_of_step_K") == 0) {
+        *dest = &coupling->canopy_air_temperature_start_of_step_K; return BMI_SUCCESS; }
+    if (strcmp(name, "canopy_air_vapor_pressure_start_of_step_Pa") == 0) {
+        *dest = &coupling->canopy_air_vapor_pressure_start_of_step_Pa; return BMI_SUCCESS; }
+    if (strcmp(name, "soil_top_disc_moisture_content") == 0) {                       /* SMC(1), FLO 10/26 */
+        *dest = &coupling->soil_top_disc_moisture_content; return BMI_SUCCESS; }
 
     /* FLO 10/21: method 6 time inputs, UTC at the start of the step */
     BallBerryTimeInputs *time_inputs = &pet->bb_time_inputs;
@@ -1437,6 +1506,16 @@ static int Get_value_ptr (Bmi *self, const char *name, void **dest)
     if (strcmp(name, "below_canopy_aerodynamic_resistance_s_per_m") == 0) { *dest = &coupling_outputs->below_canopy_aerodynamic_resistance_s_per_m; return BMI_SUCCESS; } /* RAHG */
     if (strcmp(name, "vegetation_temperature_K") == 0) { *dest = &coupling_outputs->vegetation_temperature_K; return BMI_SUCCESS; }          /* TV */
     if (strcmp(name, "canopy_latent_heat_J_per_kg") == 0) { *dest = &coupling_outputs->canopy_latent_heat_J_per_kg; return BMI_SUCCESS; }    /* LATHEAV, FLO 10/24 */
+    if (strcmp(name, "canopy_freezing_rate_mm_per_s") == 0) { *dest = &coupling_outputs->canopy_freezing_rate_mm_per_s; return BMI_SUCCESS; }
+    if (strcmp(name, "canopy_fusion_heat_flux_W_per_m2") == 0) { *dest = &coupling_outputs->canopy_fusion_heat_flux_W_per_m2; return BMI_SUCCESS; }
+    if (strcmp(name, "canopy_heat_storage_flux_W_per_m2") == 0) { *dest = &coupling_outputs->canopy_heat_storage_flux_W_per_m2; return BMI_SUCCESS; }
+    /* FLO 10/26 */
+    if (strcmp(name, "surface_resistance_with_snow_s_per_m") == 0) {
+        *dest = &coupling_outputs->surface_resistance_with_snow_s_per_m; return BMI_SUCCESS; }   /* RSURF */
+    if (strcmp(name, "cosine_solar_zenith_angle") == 0) {
+        *dest = &coupling_outputs->cosine_solar_zenith_angle; return BMI_SUCCESS; }              /* COSZ */
+    if (strcmp(name, "vegetated_fraction") == 0) {
+        *dest = &coupling_outputs->vegetated_fraction; return BMI_SUCCESS; }                     /* FVEG */
 
     return BMI_FAILURE;
 }
@@ -1542,6 +1621,14 @@ static int Set_ball_berry_value(Bmi *self, const char *name, const void *value)
         else if (strcmp(name, "canopy_ice_mm") == 0) target = &proposed_coupling.canopy_ice_mm;
         else if (strcmp(name, "precipitation_advected_heat_to_canopy_W_per_m2") == 0)
             target = &proposed_coupling.precipitation_advected_heat_to_canopy_W_per_m2;   /* FLO 10/24 */
+        else if (strcmp(name, "vegetation_temperature_start_of_step_K") == 0)
+            target = &proposed_coupling.vegetation_temperature_start_of_step_K;
+        else if (strcmp(name, "canopy_air_temperature_start_of_step_K") == 0)
+            target = &proposed_coupling.canopy_air_temperature_start_of_step_K;
+        else if (strcmp(name, "canopy_air_vapor_pressure_start_of_step_Pa") == 0)
+            target = &proposed_coupling.canopy_air_vapor_pressure_start_of_step_Pa;
+        else if (strcmp(name, "soil_top_disc_moisture_content") == 0)
+            target = &proposed_coupling.soil_top_disc_moisture_content;                     /* FLO 10/26 */
         if (target != NULL) {
             *target = proposed_value;
             if (bb6_validate_coupling_inputs(&proposed_coupling) != 0) return BMI_FAILURE;

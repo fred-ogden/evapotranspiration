@@ -207,6 +207,17 @@ typedef struct {
     double latent_heat_j_per_kg;// LATHEAV [J/kg]
     double timestep_s;          // DT [s]
     double additional_heat_w_per_m2; // PAHV [W/m2]
+    /* FLO 10/24: revised canopy energy physics (canopy_energy_physics_option = 2). Every field
+     * below is zero for the Noah-MP physics, and zero turns its term off, so the Noah-MP
+     * calculation (and the exact VEGE_FLUX replica) is unchanged. */
+    double canopy_heat_capacity_j_per_m2_k;  // C_v: biomass + intercepted water, per ground area [J/m2/K]; 0: none
+    double previous_foliage_temperature_k;   // TV at the start of the step, for C_v*(TV-TV0)/DT [K]
+    double phase_change_window_k;            // w: liquid fraction 0.5*(1+tanh((TV-TFRZ)/w)) [K]; 0: no fusion
+    double canopy_water_total_mm;            // CANLIQ + CANICE that can change phase [mm]
+    double canopy_liquid_start_mm;           // CANLIQ at the start of the step [mm]
+    double frozen_transpiration_ramp_k;      // transpiration conductance ramps to 0 over this span below TFRZ [K]; 0: off
+    int    evaporation_phase_from_latent_heat; // 1: EVC limited by CANICE if LATHEAV = HSUB, else CANLIQ;
+                                               // 0: Noah-MP, by the iterate TV > TFRZ
 } NoahmpVegeFluxInputs;
 typedef struct {
     double energy_balance_residual_w_per_m2; // Exact unlinearized foliage balance [W/m2]
@@ -220,6 +231,11 @@ typedef struct {
     double foliage_temperature_increment_k; // DTV [K]
     double updated_foliage_temperature_k; // TV + DTV [K]
     double transpiration_conductance_m_per_s; // CTW [m/s]
+    double heat_storage_w_per_m2;          // FLO 10/24: C_v*(TV-TV0)/DT at the input TV [W/m2]; 0 when off
+    double fusion_heat_w_per_m2;           // FLO 10/24: HFUS*(CANLIQ0 - CANLIQ_end)/DT, + released [W/m2]; 0 when off
+    double canopy_liquid_end_mm;           // FLO 10/24: (CANLIQ0+CANICE0)*liquid fraction(TV) [mm]; CANLIQ0 when off
+    double freezing_rate_mm_per_s;         // FLO 10/24: (CANLIQ0 - CANLIQ_end)/DT, + freezing [mm/s]; 0 when off
+    double transpiration_ramp_factor;      // FLO 10/24: frozen-canopy factor on CTW [-]; 1 when off
 } NoahmpVegeFluxOutputs;
 /* A single foliage Newton update from VEGE_FLUX, not the full coupled solver. */
 int noahmp_vege_flux_foliage_step(const NoahmpVegeFluxInputs *in,
@@ -263,6 +279,8 @@ typedef struct {
     int maximum_iterations;
     double temperature_tolerance_k;
     double maximum_temperature_step_k;
+    int hold_radiation_at_start_temperature; // FLO 10/24: 1: radiation at foliage.previous_foliage_temperature_k
+                                             // (as Noah-MP ENERGY, once per step); 0: at each trial TV
 } NoahmpCanopyIterativeInput;
 typedef struct {
     NoahmpRadiationStomataOutput radiation_stomata;
@@ -326,6 +344,14 @@ typedef struct {
     int maximum_stability_iterations;
     double resistance_relative_tolerance;
     FILE *iteration_trace_stream;        // Optional (NULL = off): exact mode writes one CSV row per iteration
+    /* FLO 10/24: 1: the outer (resistance) iteration follows the NWM VEGE_FLUX loop1 rule: at most
+     * NITERC = 20 iterations; once ITER >= 5 and the change of TV over an iteration is <= 0.01 K, one
+     * more iteration and exit; the result is accepted either way. TV is still fully converged inside
+     * each iteration, so the canopy energy balance closes for the final resistances. In very stable,
+     * calm air the Picard iteration on the Monin-Obukhov resistances can run away (no fixed point is
+     * reached), so convergence of the resistances cannot be required there. 0: iterate until the
+     * resistances converge (resistance_relative_tolerance) or fail. */
+    int noahmp_outer_iteration_rule;
 } NoahmpStabilityInput;
 typedef struct {
     NoahmpCanopyIterativeOutput canopy;
