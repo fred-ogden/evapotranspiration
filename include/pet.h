@@ -318,6 +318,8 @@ extern void alloc_pet_model(pet_model *model);
 extern void free_pet_model(pet_model *model);
 
 extern int run_pet(pet_model* model);
+/* FLO 10/27: PET method 6, one step without the BMI (pet.c); run_pet calls it for method 6 */
+extern int ball_berry_method6_core_step(pet_model *model);
 
 void pet_setup(pet_model* model);
 void pet_unit_tests(pet_model* model);

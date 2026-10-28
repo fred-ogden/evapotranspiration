@@ -85,6 +85,138 @@ static int bb6_write_diagnostic_summary(pet_model *model)
   return 0;
 }
 
+/* FLO 10/27: the core step of PET method 6 (Ball-Berry canopy energy balance), one time step,
+ * without the BMI: the canopy input from the forcing, time and coupling inputs and the parameters
+ * (bb6_build_canopy_input), the canopy solution (VEGE_FLUX loop1 replica or the nested solver),
+ * and the coupling outputs and carried canopy state, all in the pet_model struct. The BMI
+ * update() calls it through run_pet(); a differentiable stack calls it directly
+ * (dcfe-noahmp-stack phase 1, change 5). The code is the method 6 branch of run_pet() before
+ * 10/27, unchanged. Returns 0 or -1. */
+int ball_berry_method6_core_step(pet_model *model)
+{
+  NoahmpStabilityInput input;
+  NoahmpStabilityOutput output;
+  /* FLO 10/21: build this step's canopy input from the BMI forcing, time and coupling inputs
+   * and the parameters read at Initialize (ball_berry_method6_inputs.c). */
+  if (bb6_build_canopy_input(model) != 0) {
+    fprintf(stderr, "ERROR: PET method 6 could not build the canopy input for this step.\n");
+    return -1;
+  }
+  /* FLO 10/26: no exposed canopy (ELAI + ESAI = 0, buried by snow or bare): Noah-MP skips VEGE_FLUX.
+   * No transpiration or canopy evaporation; the ground absorbs SAG without a canopy and sees the
+   * downward longwave directly (EMV = 0); TAH, EAH as ATM sets them; TV is not updated. RAHG is not
+   * defined: 1 s/m is written (the SFT column uses it only under a canopy). */
+  if (model->bb_no_canopy_this_step == 1) {
+    BallBerryCouplingOutputs *coupling_outputs = &model->bb_coupling_outputs;
+    BallBerryCouplingInputs *coupling_inputs = &model->bb_coupling_inputs;
+    double TV = model->bb_no_canopy_vegetation_temperature_K;
+    coupling_outputs->canopy_transpiration_flux_m_per_s = 0.0;
+    coupling_outputs->canopy_evaporation_heat_flux_W_per_m2 = 0.0;
+    coupling_outputs->ground_shortwave_absorbed_below_canopy_W_per_m2 = model->bb_no_canopy_ground_shortwave_W_per_m2;
+    coupling_outputs->ground_longwave_absorbed_below_canopy_W_per_m2 =
+        model->bb_no_canopy_ground_emissivity * model->aorc.incoming_longwave_W_per_m2;
+    coupling_outputs->canopy_air_temperature_K = model->bb_no_canopy_air_temperature_K;
+    coupling_outputs->canopy_air_vapor_pressure_Pa = model->bb_no_canopy_air_vapor_pressure_Pa;
+    coupling_outputs->below_canopy_aerodynamic_resistance_s_per_m = 1.0;
+    coupling_outputs->vegetation_temperature_K = TV;
+    coupling_outputs->canopy_latent_heat_J_per_kg = (TV > 273.16) ? 2.5104e6 : 2.8440e6;
+    coupling_outputs->canopy_freezing_rate_mm_per_s = (model->bb_parameters.canopy_energy_physics_option == 2) ? 0.0 : NAN;
+    coupling_outputs->canopy_fusion_heat_flux_W_per_m2 = 0.0;
+    coupling_outputs->canopy_heat_storage_flux_W_per_m2 = 0.0;
+    if (model->bb_parameters.carry_canopy_state_between_steps == 1) {
+      coupling_inputs->vegetation_temperature_start_of_step_K = TV;
+      coupling_inputs->canopy_air_temperature_start_of_step_K = model->bb_no_canopy_air_temperature_K;
+      coupling_inputs->canopy_air_vapor_pressure_start_of_step_Pa = model->bb_no_canopy_air_vapor_pressure_Pa;
+    }
+    model->bb_transpiration_m_per_s = 0.0;
+    model->pet_m_per_s = 0.0;
+    return 0;
+  }
+  if (model->bb_stability_input_ready != TRUE) {
+    fprintf(stderr, "ERROR: PET method 6 could not build the canopy input for this step.\n");
+    return -1;
+  }
+  input = model->bb_stability_input;
+  if (model->bb_noahmp_compatibility == TRUE) {
+    input.canopy.stomata_update_mode = NOAHMP_STOMATA_REFERENCE_FROZEN;
+  } else {
+    input.canopy.stomata_update_mode = NOAHMP_STOMATA_REEVALUATE;
+  }
+  model->bb_stability_input_ready = FALSE; // Consume forcing even if the solver fails.
+  // FLO 10/20: optional per-iteration trace (written by the exact solver only).
+  input.iteration_trace_stream = NULL;
+  if (model->bb_iteration_trace_file != NULL && model->bb_noahmp_exact_iteration == TRUE) {
+    input.iteration_trace_stream = fopen(model->bb_iteration_trace_file, "w");
+    if (input.iteration_trace_stream == NULL) {
+      fprintf(stderr, "ERROR: cannot open bb_iteration_trace_file %s\n", model->bb_iteration_trace_file);
+      return -1;
+    }
+  }
+  int solver_status;
+  if (model->bb_noahmp_exact_iteration == TRUE) {
+    solver_status = noahmp_vege_flux_exact_solve(&input, &output);   // VEGE_FLUX loop1 replica
+  } else {
+    solver_status = noahmp_stability_coupled_solve(&input, &output); // nested Picard/Newton solver
+  }
+  if (input.iteration_trace_stream != NULL) fclose(input.iteration_trace_stream);
+  if (solver_status != 0) return -1;
+  model->bb_last_output = output;
+
+  // FLO 10/21: BMI coupling outputs. Noah-MP names on the right; see ball_berry_state.h for
+  // the area basis of each. The longwave absorbed by the under-canopy ground is the absorbed
+  // part of Noah-MP's IRG (VEGE_FLUX loop2), evaluated at the final vegetation temperature:
+  //   IRG = EMG*SB*TG**4 - EMG*(1-EMV)*LWDN - EMG*EMV*SB*TV**4   (+ = to atmosphere)
+  {
+    const NoahmpVegeFluxInputs *canopy_inputs = &input.canopy.foliage;
+    const NoahmpVegeFluxOutputs *canopy_fluxes = &output.canopy.foliage.foliage;
+    BallBerryCouplingOutputs *coupling_outputs = &model->bb_coupling_outputs;
+    double TV   = output.canopy.foliage.foliage_temperature_k;                 // vegetation temperature
+    double EMV  = canopy_inputs->vegetation_emissivity;                        // vegetation emissivity
+    double EMG  = canopy_inputs->ground_emissivity;                            // ground emissivity
+    double LWDN = canopy_inputs->incoming_longwave_w_per_m2;                   // downward longwave
+    double stefan_boltzmann_w_per_m2_k4 = canopy_inputs->stefan_boltzmann_w_per_m2_k4; // Noah-MP SB (pet_tools.h #defines SB)
+    coupling_outputs->canopy_transpiration_flux_m_per_s = output.canopy.foliage.transpiration_m_per_s;          // ETRAN
+    coupling_outputs->canopy_evaporation_heat_flux_W_per_m2 = canopy_fluxes->interception_evaporation_w_per_m2; // EVC
+    coupling_outputs->ground_shortwave_absorbed_below_canopy_W_per_m2 =
+        output.canopy.radiation_stomata.radiation.radiation.sag;                                               // SAG
+    coupling_outputs->ground_longwave_absorbed_below_canopy_W_per_m2 =
+        EMG * (1.0 - EMV) * LWDN + EMG * EMV * stefan_boltzmann_w_per_m2_k4 * pow(TV, 4.0);
+    coupling_outputs->canopy_air_temperature_K = canopy_fluxes->canopy_air_temperature_k;                     // TAH
+    coupling_outputs->canopy_air_vapor_pressure_Pa = canopy_fluxes->canopy_air_vapor_pressure_pa;              // EAH
+    coupling_outputs->below_canopy_aerodynamic_resistance_s_per_m =
+        output.ground_canopy.ground_heat_resistance_s_per_m;                                                   // RAHG
+    coupling_outputs->vegetation_temperature_K = TV;                                                           // TV
+    coupling_outputs->canopy_latent_heat_J_per_kg = canopy_inputs->latent_heat_j_per_kg;                       // LATHEAV (FLO 10/24)
+    // FLO 10/24: phase change and heat storage of the revised canopy energy physics, at the converged TV
+    if (model->bb_parameters.canopy_energy_physics_option == 2) {
+      coupling_outputs->canopy_freezing_rate_mm_per_s = canopy_fluxes->freezing_rate_mm_per_s;
+      coupling_outputs->canopy_fusion_heat_flux_W_per_m2 = canopy_fluxes->fusion_heat_w_per_m2;
+      coupling_outputs->canopy_heat_storage_flux_W_per_m2 = canopy_fluxes->heat_storage_w_per_m2;
+    } else {
+      coupling_outputs->canopy_freezing_rate_mm_per_s = NAN;     // CIESM uses its own Noah-MP rate
+      coupling_outputs->canopy_fusion_heat_flux_W_per_m2 = 0.0;
+      coupling_outputs->canopy_heat_storage_flux_W_per_m2 = 0.0;
+    }
+    // FLO 10/24: the canopy state at the end of this step is the state at the start of the next
+    {
+      BallBerryCouplingInputs *coupling_inputs = &model->bb_coupling_inputs;
+      if (model->bb_parameters.carry_canopy_state_between_steps == 1) {
+        coupling_inputs->vegetation_temperature_start_of_step_K = TV;
+        coupling_inputs->canopy_air_temperature_start_of_step_K = canopy_fluxes->canopy_air_temperature_k;
+        coupling_inputs->canopy_air_vapor_pressure_start_of_step_Pa = canopy_fluxes->canopy_air_vapor_pressure_pa;
+      }
+    }
+  }
+
+  // FLO 10/21: optional diagnostic summary of this update (Noah-MP names), for comparison with
+  // the Fortran NWM Noah-MP reference. Overwritten at each update: it holds the last step.
+  if (model->bb_diagnostic_summary_file != NULL && bb6_write_diagnostic_summary(model) != 0) return -1;
+  model->bb_transpiration_m_per_s = output.canopy.foliage.transpiration_m_per_s;
+  model->pet_m_per_s = model->bb_transpiration_m_per_s;
+  if (model->pet_m_per_s < 0.0) model->pet_m_per_s = 0.0;
+  return 0;
+}
+
 extern int run_pet(pet_model* model)
 {
   if (model == NULL) return -1;
@@ -92,129 +224,7 @@ extern int run_pet(pet_model* model)
     printf("Running the PET model \n");
     printf("model->bmi.is_forcing_from_bmi %d \n", model->bmi.is_forcing_from_bmi);
   }
-  if (model->pet_method == 6) {
-    NoahmpStabilityInput input;
-    NoahmpStabilityOutput output;
-    /* FLO 10/21: build this step's canopy input from the BMI forcing, time and coupling inputs
-     * and the parameters read at Initialize (ball_berry_method6_inputs.c). */
-    if (bb6_build_canopy_input(model) != 0) {
-      fprintf(stderr, "ERROR: PET method 6 could not build the canopy input for this step.\n");
-      return -1;
-    }
-    /* FLO 10/26: no exposed canopy (ELAI + ESAI = 0, buried by snow or bare): Noah-MP skips VEGE_FLUX.
-     * No transpiration or canopy evaporation; the ground absorbs SAG without a canopy and sees the
-     * downward longwave directly (EMV = 0); TAH, EAH as ATM sets them; TV is not updated. RAHG is not
-     * defined: 1 s/m is written (the SFT column uses it only under a canopy). */
-    if (model->bb_no_canopy_this_step == 1) {
-      BallBerryCouplingOutputs *coupling_outputs = &model->bb_coupling_outputs;
-      BallBerryCouplingInputs *coupling_inputs = &model->bb_coupling_inputs;
-      double TV = model->bb_no_canopy_vegetation_temperature_K;
-      coupling_outputs->canopy_transpiration_flux_m_per_s = 0.0;
-      coupling_outputs->canopy_evaporation_heat_flux_W_per_m2 = 0.0;
-      coupling_outputs->ground_shortwave_absorbed_below_canopy_W_per_m2 = model->bb_no_canopy_ground_shortwave_W_per_m2;
-      coupling_outputs->ground_longwave_absorbed_below_canopy_W_per_m2 =
-          model->bb_no_canopy_ground_emissivity * model->aorc.incoming_longwave_W_per_m2;
-      coupling_outputs->canopy_air_temperature_K = model->bb_no_canopy_air_temperature_K;
-      coupling_outputs->canopy_air_vapor_pressure_Pa = model->bb_no_canopy_air_vapor_pressure_Pa;
-      coupling_outputs->below_canopy_aerodynamic_resistance_s_per_m = 1.0;
-      coupling_outputs->vegetation_temperature_K = TV;
-      coupling_outputs->canopy_latent_heat_J_per_kg = (TV > 273.16) ? 2.5104e6 : 2.8440e6;
-      coupling_outputs->canopy_freezing_rate_mm_per_s = (model->bb_parameters.canopy_energy_physics_option == 2) ? 0.0 : NAN;
-      coupling_outputs->canopy_fusion_heat_flux_W_per_m2 = 0.0;
-      coupling_outputs->canopy_heat_storage_flux_W_per_m2 = 0.0;
-      if (model->bb_parameters.carry_canopy_state_between_steps == 1) {
-        coupling_inputs->vegetation_temperature_start_of_step_K = TV;
-        coupling_inputs->canopy_air_temperature_start_of_step_K = model->bb_no_canopy_air_temperature_K;
-        coupling_inputs->canopy_air_vapor_pressure_start_of_step_Pa = model->bb_no_canopy_air_vapor_pressure_Pa;
-      }
-      model->bb_transpiration_m_per_s = 0.0;
-      model->pet_m_per_s = 0.0;
-      return 0;
-    }
-    if (model->bb_stability_input_ready != TRUE) {
-      fprintf(stderr, "ERROR: PET method 6 could not build the canopy input for this step.\n");
-      return -1;
-    }
-    input = model->bb_stability_input;
-    if (model->bb_noahmp_compatibility == TRUE) {
-      input.canopy.stomata_update_mode = NOAHMP_STOMATA_REFERENCE_FROZEN;
-    } else {
-      input.canopy.stomata_update_mode = NOAHMP_STOMATA_REEVALUATE;
-    }
-    model->bb_stability_input_ready = FALSE; // Consume forcing even if the solver fails.
-    // FLO 10/20: optional per-iteration trace (written by the exact solver only).
-    input.iteration_trace_stream = NULL;
-    if (model->bb_iteration_trace_file != NULL && model->bb_noahmp_exact_iteration == TRUE) {
-      input.iteration_trace_stream = fopen(model->bb_iteration_trace_file, "w");
-      if (input.iteration_trace_stream == NULL) {
-        fprintf(stderr, "ERROR: cannot open bb_iteration_trace_file %s\n", model->bb_iteration_trace_file);
-        return -1;
-      }
-    }
-    int solver_status;
-    if (model->bb_noahmp_exact_iteration == TRUE) {
-      solver_status = noahmp_vege_flux_exact_solve(&input, &output);   // VEGE_FLUX loop1 replica
-    } else {
-      solver_status = noahmp_stability_coupled_solve(&input, &output); // nested Picard/Newton solver
-    }
-    if (input.iteration_trace_stream != NULL) fclose(input.iteration_trace_stream);
-    if (solver_status != 0) return -1;
-    model->bb_last_output = output;
-
-    // FLO 10/21: BMI coupling outputs. Noah-MP names on the right; see ball_berry_state.h for
-    // the area basis of each. The longwave absorbed by the under-canopy ground is the absorbed
-    // part of Noah-MP's IRG (VEGE_FLUX loop2), evaluated at the final vegetation temperature:
-    //   IRG = EMG*SB*TG**4 - EMG*(1-EMV)*LWDN - EMG*EMV*SB*TV**4   (+ = to atmosphere)
-    {
-      const NoahmpVegeFluxInputs *canopy_inputs = &input.canopy.foliage;
-      const NoahmpVegeFluxOutputs *canopy_fluxes = &output.canopy.foliage.foliage;
-      BallBerryCouplingOutputs *coupling_outputs = &model->bb_coupling_outputs;
-      double TV   = output.canopy.foliage.foliage_temperature_k;                 // vegetation temperature
-      double EMV  = canopy_inputs->vegetation_emissivity;                        // vegetation emissivity
-      double EMG  = canopy_inputs->ground_emissivity;                            // ground emissivity
-      double LWDN = canopy_inputs->incoming_longwave_w_per_m2;                   // downward longwave
-      double stefan_boltzmann_w_per_m2_k4 = canopy_inputs->stefan_boltzmann_w_per_m2_k4; // Noah-MP SB (pet_tools.h #defines SB)
-      coupling_outputs->canopy_transpiration_flux_m_per_s = output.canopy.foliage.transpiration_m_per_s;          // ETRAN
-      coupling_outputs->canopy_evaporation_heat_flux_W_per_m2 = canopy_fluxes->interception_evaporation_w_per_m2; // EVC
-      coupling_outputs->ground_shortwave_absorbed_below_canopy_W_per_m2 =
-          output.canopy.radiation_stomata.radiation.radiation.sag;                                               // SAG
-      coupling_outputs->ground_longwave_absorbed_below_canopy_W_per_m2 =
-          EMG * (1.0 - EMV) * LWDN + EMG * EMV * stefan_boltzmann_w_per_m2_k4 * pow(TV, 4.0);
-      coupling_outputs->canopy_air_temperature_K = canopy_fluxes->canopy_air_temperature_k;                     // TAH
-      coupling_outputs->canopy_air_vapor_pressure_Pa = canopy_fluxes->canopy_air_vapor_pressure_pa;              // EAH
-      coupling_outputs->below_canopy_aerodynamic_resistance_s_per_m =
-          output.ground_canopy.ground_heat_resistance_s_per_m;                                                   // RAHG
-      coupling_outputs->vegetation_temperature_K = TV;                                                           // TV
-      coupling_outputs->canopy_latent_heat_J_per_kg = canopy_inputs->latent_heat_j_per_kg;                       // LATHEAV (FLO 10/24)
-      // FLO 10/24: phase change and heat storage of the revised canopy energy physics, at the converged TV
-      if (model->bb_parameters.canopy_energy_physics_option == 2) {
-        coupling_outputs->canopy_freezing_rate_mm_per_s = canopy_fluxes->freezing_rate_mm_per_s;
-        coupling_outputs->canopy_fusion_heat_flux_W_per_m2 = canopy_fluxes->fusion_heat_w_per_m2;
-        coupling_outputs->canopy_heat_storage_flux_W_per_m2 = canopy_fluxes->heat_storage_w_per_m2;
-      } else {
-        coupling_outputs->canopy_freezing_rate_mm_per_s = NAN;     // CIESM uses its own Noah-MP rate
-        coupling_outputs->canopy_fusion_heat_flux_W_per_m2 = 0.0;
-        coupling_outputs->canopy_heat_storage_flux_W_per_m2 = 0.0;
-      }
-      // FLO 10/24: the canopy state at the end of this step is the state at the start of the next
-      {
-        BallBerryCouplingInputs *coupling_inputs = &model->bb_coupling_inputs;
-        if (model->bb_parameters.carry_canopy_state_between_steps == 1) {
-          coupling_inputs->vegetation_temperature_start_of_step_K = TV;
-          coupling_inputs->canopy_air_temperature_start_of_step_K = canopy_fluxes->canopy_air_temperature_k;
-          coupling_inputs->canopy_air_vapor_pressure_start_of_step_Pa = canopy_fluxes->canopy_air_vapor_pressure_pa;
-        }
-      }
-    }
-
-    // FLO 10/21: optional diagnostic summary of this update (Noah-MP names), for comparison with
-    // the Fortran NWM Noah-MP reference. Overwritten at each update: it holds the last step.
-    if (model->bb_diagnostic_summary_file != NULL && bb6_write_diagnostic_summary(model) != 0) return -1;
-    model->bb_transpiration_m_per_s = output.canopy.foliage.transpiration_m_per_s;
-    model->pet_m_per_s = model->bb_transpiration_m_per_s;
-    if (model->pet_m_per_s < 0.0) model->pet_m_per_s = 0.0;
-    return 0;
-  }
+  if (model->pet_method == 6) return ball_berry_method6_core_step(model);   /* FLO 10/27 */
   if (model->pet_method < 1 || model->pet_method > 5) return -1;
   if (model->pet_params.zero_plane_displacement_height_m <= 0.0){
     fprintf(stderr, "ERROR: zero_plane_displacement_height_m must be > 0.0 m. Current value: %lf\n", model->pet_params.zero_plane_displacement_height_m);
