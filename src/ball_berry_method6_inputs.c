@@ -407,6 +407,8 @@ int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_
     parameters->solar_geometry_option = (int)configuration_real_or_default(&table, "solar_geometry_option", 0.0);
     parameters->solar_geometry_at_end_of_step =
         (int)configuration_real_or_default(&table, "solar_geometry_at_end_of_step", 1.0);
+    // FLO 10/27: the date of the monthly LAI/SAI table; 0 keeps the behavior before 10/27
+    parameters->lai_sai_at_end_of_step = (int)configuration_real_or_default(&table, "lai_sai_at_end_of_step", 0.0);
     parameters->longitude_degrees = configuration_real_or_default(&table, "longitude_degrees", 0.0);
     parameters->terrain_slope_degrees = configuration_real_or_default(&table, "terrain_slope_degrees", 0.0);
     parameters->terrain_azimuth_degrees = configuration_real_or_default(&table, "terrain_azimuth_degrees", 0.0);
@@ -521,13 +523,17 @@ int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_
     }
     if ((parameters->solar_geometry_option != 0 && parameters->solar_geometry_option != 1) ||
         (parameters->solar_geometry_at_end_of_step != 0 && parameters->solar_geometry_at_end_of_step != 1) ||
+        (parameters->lai_sai_at_end_of_step != 0 && parameters->lai_sai_at_end_of_step != 1) ||
+        (parameters->initialize_canopy_state_from_forcing < 0 || parameters->initialize_canopy_state_from_forcing > 2) ||
         (parameters->dynamic_vegetation_option != 0 && parameters->dynamic_vegetation_option != 1) ||
         (parameters->surface_resistance_snow_blend_option != 0 && parameters->surface_resistance_snow_blend_option != 1) ||
         (parameters->soil_albedo_option != 0 && parameters->soil_albedo_option != 1) ||
         !(parameters->surface_resistance_snow_s_per_m > 0.0) || !(fabs(parameters->longitude_degrees) <= 360.0) ||
         !(parameters->terrain_slope_degrees >= 0.0 && parameters->terrain_slope_degrees <= 90.0)) {
-        fprintf(stderr, "ERROR: solar_geometry_option, solar_geometry_at_end_of_step, dynamic_vegetation_option, "
-                        "surface_resistance_snow_blend_option and soil_albedo_option must be 0 or 1; surface_resistance_snow_s_per_m > 0; "
+        fprintf(stderr, "ERROR: solar_geometry_option, solar_geometry_at_end_of_step, lai_sai_at_end_of_step, "
+                        "dynamic_vegetation_option, "
+                        "surface_resistance_snow_blend_option and soil_albedo_option must be 0 or 1; "
+                        "initialize_canopy_state_from_forcing 0, 1 or 2; surface_resistance_snow_s_per_m > 0; "
                         "longitude and terrain slope in range\n");
         return -1;
     }
@@ -699,7 +705,23 @@ int bb6_build_canopy_input(pet_model *pet)
 
     // ---- leaf and stem area index: monthly table (written back to BMI) or current BMI values
     if (parameters->use_monthly_lai_sai_table == 1) {
-        if (interpolate_monthly_lai_sai(parameters, &pet->bb_time_inputs, &leaf_area_index, &stem_area_index) != 0)
+        // FLO 10/27: dated at the BMI time inputs, or at start + DT (lai_sai_at_end_of_step = 1, NOM)
+        BallBerryTimeInputs lai_sai_date = pet->bb_time_inputs;
+        if (parameters->lai_sai_at_end_of_step == 1 && !isnan(lai_sai_date.time_year) &&
+            !isnan(lai_sai_date.time_month) && !isnan(lai_sai_date.time_day_of_month) &&
+            !isnan(lai_sai_date.time_hour) && !isnan(lai_sai_date.time_minute)) {
+            int year, month, day, hour, minute;
+            noahmp_advance_datetime((int)lai_sai_date.time_year, (int)lai_sai_date.time_month,
+                                    (int)lai_sai_date.time_day_of_month, (int)lai_sai_date.time_hour,
+                                    (int)lai_sai_date.time_minute, (long)(pet->bmi.time_step_size_s / 60.0),
+                                    &year, &month, &day, &hour, &minute);
+            lai_sai_date.time_year = (double)year;
+            lai_sai_date.time_month = (double)month;
+            lai_sai_date.time_day_of_month = (double)day;
+            lai_sai_date.time_hour = (double)hour;
+            lai_sai_date.time_minute = (double)minute;
+        }
+        if (interpolate_monthly_lai_sai(parameters, &lai_sai_date, &leaf_area_index, &stem_area_index) != 0)
             return -1;
         pet->bb_canopy.lai = leaf_area_index;
         pet->bb_canopy.sai = stem_area_index;
@@ -788,6 +810,14 @@ int bb6_build_canopy_input(pet_model *pet)
         initial_vegetation_temperature_k = air_temperature_k;
         initial_canopy_air_temperature_k = air_temperature_k;
         initial_canopy_air_vapor_pressure_pa = air_vapor_pressure_pa;
+    } else if (parameters->initialize_canopy_state_from_forcing == 2) {
+        // FLO 10/27: NOM cold start: TV configured (NOM 298 K), TAH = SFCTMP and EAH from the
+        // mixing ratio, as NOM sets them before its first step
+        double mixing_ratio_kg_per_kg = specific_humidity_kg_per_kg / (1.0 - specific_humidity_kg_per_kg);
+        initial_vegetation_temperature_k = parameters->initial_vegetation_temperature_k;
+        initial_canopy_air_temperature_k = air_temperature_k;
+        initial_canopy_air_vapor_pressure_pa = surface_pressure_pa * mixing_ratio_kg_per_kg /
+                                               (0.622 + mixing_ratio_kg_per_kg);
     } else {
         initial_vegetation_temperature_k = parameters->initial_vegetation_temperature_k;
         initial_canopy_air_temperature_k = parameters->initial_canopy_air_temperature_k;

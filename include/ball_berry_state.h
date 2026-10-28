@@ -101,7 +101,11 @@ typedef struct {
     double co2_mole_fraction;                          /* [CO2] */
     double o2_mole_fraction;                           /* [O2] */
     double ground_temperature_offset_from_air_k;       /* TG = air temperature + offset until TG is set */
-    int    initialize_canopy_state_from_forcing;       /* 1: TV = TAH = SFCTMP, EAH = EAIR */
+    int    initialize_canopy_state_from_forcing;       /* 1: TV = TAH = SFCTMP, EAH = EAIR;
+                                                          2 (FLO 10/27): NOM cold start, TV from
+                                                          initial_vegetation_temperature_k,
+                                                          TAH = SFCTMP, EAH = SFCPRS*QV/(0.622+QV)
+                                                          with QV the mixing ratio Q2/(1-Q2) */
     double initial_vegetation_temperature_k;           /* [TV]  used when the flag above is 0 */
     double initial_canopy_air_temperature_k;           /* [TAH] */
     double initial_canopy_air_vapor_pressure_pa;       /* [EAH] */
@@ -119,6 +123,9 @@ typedef struct {
                                                           1: COSZ from the BMI time inputs and the site
                                                           (Noah-MP calc_declin, as NoahMP_snow_ablation) */
     int    solar_geometry_at_end_of_step;              /* 1: COSZ at start of step + DT (NOM, NWM) */
+    int    lai_sai_at_end_of_step;                     /* FLO 10/27: 1: monthly LAI/SAI at start of
+                                                          step + DT (NOM UtilitiesMain); 0: at the
+                                                          BMI time inputs */
     double longitude_degrees;                          /* [lon] solar_geometry_option = 1 */
     double terrain_slope_degrees;                      /* [terrain_slope] 0 for NWM (flat) */
     double terrain_azimuth_degrees;                    /* [azimuth] clockwise from north */

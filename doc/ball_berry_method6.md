@@ -201,6 +201,8 @@ stack configuration is `configs/ball_berry_noahmp_cat-18560.cfg` (cat-18560, USG
 |---|---|---|
 | solar_geometry_option | 0 (default), 1 | 1: COSZ from the BMI time inputs and the site (`latitude_degrees`, `longitude_degrees`, `terrain_slope_degrees`, `terrain_azimuth_degrees`), Noah-MP calc_declin as in NoahMP_snow_ablation; the shortwave is corrected to the slope as NOM ATM does (no change for zero slope); at night (COSZ <= 0) nothing is absorbed, as Noah-MP ALBEDO |
 | solar_geometry_at_end_of_step | 1 (default), 0 | 1: COSZ at start of step + DT, as NOM UtilitiesMain |
+| lai_sai_at_end_of_step | 0 (default), 1 | FLO 10/27. 1: the monthly LAI/SAI table at start of step + DT, as NOM UtilitiesMain, so a driver passes the start-of-step time to every module |
+| initialize_canopy_state_from_forcing | 0, 1, 2 | 2 (FLO 10/27): NOM cold start, TV = `initial_vegetation_temperature_k` (NOM 298 K), TAH = SFCTMP, EAH = SFCPRS QV/(0.622 + QV) with QV = Q2/(1 - Q2) the mixing ratio; a start-of-step value set through the BMI still takes precedence |
 | dynamic_vegetation_option | 0 (default), 1 | 1: DVEG = 1, FVEG = SHDFAC with a floor of 0.05 |
 | surface_resistance_snow_blend_option | 0 (default), 1 | 1: OPT_RSF = 4, RSURF = 1/(FSNO/RSURF_SNOW + (1-FSNO)/MAX(RSURF,0.001)); `surface_resistance_snow_s_per_m` (50) |
 | soil_albedo_option | 0 (default), 1 | 1: GROUNDALB, ALBSOD = ALBSOI = MIN(ALBSAT + MAX(0.11-0.40 SMC(1),0), ALBDRY) from the new BMI input `soil_top_disc_moisture_content` (`soil_albedo_saturated_*`, `soil_albedo_dry_*` by soil color) |
