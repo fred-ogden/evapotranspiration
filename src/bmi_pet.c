@@ -15,7 +15,7 @@
 #include "../include/bmi_pet.h"
 
 #define INPUT_VAR_NAME_COUNT 36 // FLO 10/26: 7 AORC forcings, 6 Ball-Berry state/parameters, 13 coupling inputs, 3 canopy state, 6 time inputs, top-disc soil moisture
-#define OUTPUT_VAR_NAME_COUNT 16 // FLO 10/26: PET plus 15 Ball-Berry coupling outputs
+#define OUTPUT_VAR_NAME_COUNT 49 // FLO 10/26: PET plus 15 Ball-Berry coupling outputs; FLO 10/27: + 33 read-only configuration values
 
 // Remove leading and trailing whitespace from a string in place.
 // Returns a pointer to the first non-whitespace character.
@@ -452,11 +452,77 @@ static const char *output_var_names[OUTPUT_VAR_NAME_COUNT] = {
     "canopy_heat_storage_flux_W_per_m2",
     "surface_resistance_with_snow_s_per_m",
     "cosine_solar_zenith_angle",
-    "vegetated_fraction"
+    "vegetated_fraction",
+    "configuration_latitude_degrees",
+    "configuration_longitude_degrees",
+    "configuration_terrain_slope_degrees",
+    "configuration_terrain_azimuth_degrees",
+    "configuration_canopy_top_height_m",
+    "configuration_canopy_bottom_height_m",
+    "configuration_momentum_roughness_length_m",
+    "configuration_forcing_height_above_canopy_top_m",
+    "configuration_soil_emissivity",
+    "configuration_lai_month_01",
+    "configuration_lai_month_02",
+    "configuration_lai_month_03",
+    "configuration_lai_month_04",
+    "configuration_lai_month_05",
+    "configuration_lai_month_06",
+    "configuration_lai_month_07",
+    "configuration_lai_month_08",
+    "configuration_lai_month_09",
+    "configuration_lai_month_10",
+    "configuration_lai_month_11",
+    "configuration_lai_month_12",
+    "configuration_sai_month_01",
+    "configuration_sai_month_02",
+    "configuration_sai_month_03",
+    "configuration_sai_month_04",
+    "configuration_sai_month_05",
+    "configuration_sai_month_06",
+    "configuration_sai_month_07",
+    "configuration_sai_month_08",
+    "configuration_sai_month_09",
+    "configuration_sai_month_10",
+    "configuration_sai_month_11",
+    "configuration_sai_month_12"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *output_var_types[OUTPUT_VAR_NAME_COUNT] = {
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
+    "double",
     "double",
     "double",
     "double",
@@ -492,6 +558,39 @@ static const int output_var_item_count[OUTPUT_VAR_NAME_COUNT] = {
     1,
     1,
     1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
     1
 };
 
@@ -511,6 +610,39 @@ static const char *output_var_units[OUTPUT_VAR_NAME_COUNT] = {
     "W m-2",
     "W m-2",
     "s m-1",
+    "1",
+    "1",
+    "degrees",
+    "degrees",
+    "degrees",
+    "degrees",
+    "m",
+    "m",
+    "m",
+    "m",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
+    "1",
     "1",
     "1"
 };
@@ -532,11 +664,77 @@ static const int output_var_grids[OUTPUT_VAR_NAME_COUNT] = {
     0,
     0,
     0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
     0
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *output_var_locations[OUTPUT_VAR_NAME_COUNT] = {
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
+    "node",
     "node",
     "node",
     "node",
@@ -1516,6 +1714,42 @@ static int Get_value_ptr (Bmi *self, const char *name, void **dest)
         *dest = &coupling_outputs->cosine_solar_zenith_angle; return BMI_SUCCESS; }              /* COSZ */
     if (strcmp(name, "vegetated_fraction") == 0) {
         *dest = &coupling_outputs->vegetated_fraction; return BMI_SUCCESS; }                     /* FVEG */
+    /* FLO 10/27: read-only configuration values (the keys of the same names without the prefix),
+     * for a driver's checks between modules */
+    BallBerryMethod6Parameters *configuration = &pet->bb_parameters;
+    if (strcmp(name, "configuration_latitude_degrees") == 0) { *dest = &configuration->latitude_degrees; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_longitude_degrees") == 0) { *dest = &configuration->longitude_degrees; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_terrain_slope_degrees") == 0) { *dest = &configuration->terrain_slope_degrees; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_terrain_azimuth_degrees") == 0) { *dest = &configuration->terrain_azimuth_degrees; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_canopy_top_height_m") == 0) { *dest = &configuration->canopy_top_height_m; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_canopy_bottom_height_m") == 0) { *dest = &configuration->canopy_bottom_height_m; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_momentum_roughness_length_m") == 0) { *dest = &configuration->momentum_roughness_length_m; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_forcing_height_above_canopy_top_m") == 0) { *dest = &configuration->forcing_height_above_canopy_top_m; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_soil_emissivity") == 0) { *dest = &configuration->soil_emissivity; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_lai_month_01") == 0) { *dest = &configuration->leaf_area_index_by_month[0]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_lai_month_02") == 0) { *dest = &configuration->leaf_area_index_by_month[1]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_lai_month_03") == 0) { *dest = &configuration->leaf_area_index_by_month[2]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_lai_month_04") == 0) { *dest = &configuration->leaf_area_index_by_month[3]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_lai_month_05") == 0) { *dest = &configuration->leaf_area_index_by_month[4]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_lai_month_06") == 0) { *dest = &configuration->leaf_area_index_by_month[5]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_lai_month_07") == 0) { *dest = &configuration->leaf_area_index_by_month[6]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_lai_month_08") == 0) { *dest = &configuration->leaf_area_index_by_month[7]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_lai_month_09") == 0) { *dest = &configuration->leaf_area_index_by_month[8]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_lai_month_10") == 0) { *dest = &configuration->leaf_area_index_by_month[9]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_lai_month_11") == 0) { *dest = &configuration->leaf_area_index_by_month[10]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_lai_month_12") == 0) { *dest = &configuration->leaf_area_index_by_month[11]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_sai_month_01") == 0) { *dest = &configuration->stem_area_index_by_month[0]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_sai_month_02") == 0) { *dest = &configuration->stem_area_index_by_month[1]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_sai_month_03") == 0) { *dest = &configuration->stem_area_index_by_month[2]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_sai_month_04") == 0) { *dest = &configuration->stem_area_index_by_month[3]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_sai_month_05") == 0) { *dest = &configuration->stem_area_index_by_month[4]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_sai_month_06") == 0) { *dest = &configuration->stem_area_index_by_month[5]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_sai_month_07") == 0) { *dest = &configuration->stem_area_index_by_month[6]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_sai_month_08") == 0) { *dest = &configuration->stem_area_index_by_month[7]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_sai_month_09") == 0) { *dest = &configuration->stem_area_index_by_month[8]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_sai_month_10") == 0) { *dest = &configuration->stem_area_index_by_month[9]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_sai_month_11") == 0) { *dest = &configuration->stem_area_index_by_month[10]; return BMI_SUCCESS; }
+    if (strcmp(name, "configuration_sai_month_12") == 0) { *dest = &configuration->stem_area_index_by_month[11]; return BMI_SUCCESS; }
 
     return BMI_FAILURE;
 }
