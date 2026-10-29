@@ -106,7 +106,7 @@ The 13 ctests and their output files, a replay of the stack's inputs for the six
 period (356,544 divide-hours, every coupling output, %a), the CIESM coupled ctests and the dcfe-noahmp-stack core
 path test (56 files) are bitwise the same as before the change.
 
-## Results, Tapenade 3.16 (the version on nordin), FLO 10/28, all PASS
+## Results, Tapenade 3.16, FLO 10/28, all PASS (here, and on nordin with the same numbers)
 
 - p: 59,424 hours, bitwise.
 - t: worst tangent error away from kinks 7.4e-7 (BP on the first day), over 640 point-independent pairs; no kinks;
