@@ -71,6 +71,7 @@ void ball_berry_head(double independent[BB_HEAD_INDEPENDENT_COUNT], double depen
     step.green_vegetation_fraction = independent[BB_HEAD_IN_GREEN_VEGETATION_FRACTION];
     parameters.momentum_roughness_length_m = independent[BB_HEAD_IN_MOMENTUM_ROUGHNESS_LENGTH];
     parameters.characteristic_leaf_dimension_m = independent[BB_HEAD_IN_LEAF_DIMENSION];
+    parameters.surface_resistance_snow_s_per_m = independent[BB_HEAD_IN_SNOW_SURFACE_RESISTANCE];
 
     /* ---- one step */
     status = ball_berry_method6_physics_step(&parameters, &step, &canopy_input, &solution, &trace, &results);

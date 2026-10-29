@@ -24,12 +24,12 @@ builds the primal-only test (experiment p, and t as a central-difference self-co
   independents and dependents are flat arrays, so the generated signature is predictable. The canopy state at the
   start of the step is among the independents and the state at the end among the dependents, so the head chains
   over steps.
-  - 32 independents:
+  - 33 independents:
     - the canopy state at the start of the step: TV, TAH, EAH;
     - the forcing: air temperature, pressure, specific humidity, shortwave and longwave down, the two wind
       components;
     - the coupling inputs: BTRAN, TG, RSURF, FSNO, SNOWH, the four snow albedos, FWET, CANLIQ, CANICE, PAHV, SMC(1);
-    - the parameters: MP, VCMX25, BP, QE25, CWP, SHDFAC, Z0M, DLEAF.
+    - the parameters: MP, VCMX25, BP, QE25, CWP, SHDFAC, Z0M, DLEAF, and RSURF_SNOW (FLO 10/28).
   - 14 dependents: the coupling outputs (ETRAN, EVC, SAG, the ground longwave absorbed, TAH, EAH, RAHG, TV,
     LATHEAV, the option 2 fusion and storage heat, RSURF after the snow blend, FVEG) and the PET. Left out: the
     freezing rate (NaN in the BMI with the Noah-MP physics) and COSZ (set by the time inputs alone).
@@ -121,5 +121,16 @@ path test (56 files) are bitwise the same as before the change.
 The first run failed t only on the tangent code's primal, which differed from the head in the last bits: Tapenade
 regrouped the chains of multiplications and divisions (for example STOMATA's `0.5*kc/ko*o2*0.21`). Writing the
 chains one operation per statement fixed it.
+
+## RSURF_SNOW added, FLO 10/28, all PASS (Tapenade 3.16)
+
+RSURF_SNOW (`surface_resistance_snow_s_per_m`, the snow resistance of the OPT_RSF = 4 blend of RSURF) is among the
+parameters estimated with the shared NOM-named set, with VCMX25, MP and CWP (Fred, 10/28). It is an independent of
+the head and a BMI input (`RSURF_SNOW`, s/m, positive), so the stack can set it as a model_params value. The BMI now
+has 37 inputs; the ctests' outputs differ only in that count and in the BMI unit test's check count (983, was 972).
+- p: 59,424 hours, bitwise.
+- t: worst tangent error away from kinks 7.4e-7, over 660 point-independent pairs; no kinks. RSURF_SNOW has an
+  effect only with snow on the ground (5 of the 20 states; 1e-10 to 1e-8 there).
+- a: reverse against tangent Jacobian 2.8e-12 at worst; dot products 5.2e-14 at worst.
 
 FLO 10/28: first version.

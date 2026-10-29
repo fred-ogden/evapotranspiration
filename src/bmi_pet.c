@@ -14,7 +14,7 @@
 #include "../include/bmi.h"
 #include "../include/bmi_pet.h"
 
-#define INPUT_VAR_NAME_COUNT 36 // FLO 10/26: 7 AORC forcings, 6 Ball-Berry state/parameters, 13 coupling inputs, 3 canopy state, 6 time inputs, top-disc soil moisture
+#define INPUT_VAR_NAME_COUNT 37 // FLO 10/26: 7 AORC forcings, 6 Ball-Berry state/parameters, 13 coupling inputs, 3 canopy state, 6 time inputs, top-disc soil moisture; FLO 10/28: RSURF_SNOW
 #define OUTPUT_VAR_NAME_COUNT 49 // FLO 10/26: PET plus 15 Ball-Berry coupling outputs; FLO 10/27: + 33 read-only configuration values
 
 // Remove leading and trailing whitespace from a string in place.
@@ -790,6 +790,7 @@ static const int input_var_item_count[INPUT_VAR_NAME_COUNT] = {
     1,
     1,
     1,
+    1,
     1
 };
 
@@ -830,11 +831,13 @@ static const char input_var_grids[INPUT_VAR_NAME_COUNT] = {
     0,
     0,
     0,
+    0,
     0
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *input_var_locations[INPUT_VAR_NAME_COUNT] = {
+    "node",
     "node",
     "node",
     "node",
@@ -915,11 +918,13 @@ static const char *input_var_names[INPUT_VAR_NAME_COUNT] = {
     "time_hour",
     "time_minute",
     "time_second",
-    "soil_top_disc_moisture_content"
+    "soil_top_disc_moisture_content",
+    "RSURF_SNOW"                       /* FLO 10/28: [RSURF_SNOW] surface resistance of snow (OPT_RSF = 4 blend), a parameter estimated with the shared NOM-named set */
 };
 
 //---------------------------------------------------------------------------------------------------------------------
 static const char *input_var_types[INPUT_VAR_NAME_COUNT] = {
+    "double",
     "double",
     "double",
     "double",
@@ -995,7 +1000,8 @@ static const char *input_var_units[INPUT_VAR_NAME_COUNT] = {
     "h",
     "min",
     "s",
-    "m3 m-3"
+    "m3 m-3",
+    "s m-1"
 };
 
 //---------------------------------------------------------------------------------------------------------------------
@@ -1657,6 +1663,7 @@ static int Get_value_ptr (Bmi *self, const char *name, void **dest)
     if (strcmp(name, "CWP") == 0) { *dest = &pet->bb_cwp; return BMI_SUCCESS; }
     if (strcmp(name, "MP") == 0) { *dest = &pet->bb_stomata.mp; return BMI_SUCCESS; }
     if (strcmp(name, "VCMX25") == 0) { *dest = &pet->bb_stomata.vcmx25; return BMI_SUCCESS; }
+    if (strcmp(name, "RSURF_SNOW") == 0) { *dest = &pet->bb_parameters.surface_resistance_snow_s_per_m; return BMI_SUCCESS; }   /* FLO 10/28 */
 
     /* FLO 10/21: Ball-Berry (method 6) coupling inputs [Noah-MP name] */
     BallBerryCouplingInputs *coupling = &pet->bb_coupling_inputs;
@@ -1874,6 +1881,12 @@ static int Set_ball_berry_value(Bmi *self, const char *name, const void *value)
     if (strcmp(name, "CWP") == 0) { pet->bb_cwp = proposed_value; return BMI_SUCCESS; }
     if (strcmp(name, "MP") == 0) { pet->bb_stomata.mp = proposed_value; return BMI_SUCCESS; }
     if (strcmp(name, "VCMX25") == 0) { pet->bb_stomata.vcmx25 = proposed_value; return BMI_SUCCESS; }
+    /* FLO 10/28: RSURF_SNOW divides the snow fraction in the OPT_RSF = 4 blend: positive */
+    if (strcmp(name, "RSURF_SNOW") == 0) {
+        if (!(proposed_value > 0.0)) return BMI_FAILURE;
+        pet->bb_parameters.surface_resistance_snow_s_per_m = proposed_value;
+        return BMI_SUCCESS;
+    }
     return BMI_FAILURE;
 }
 

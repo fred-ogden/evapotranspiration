@@ -21,6 +21,8 @@ We follow the [Semantic Versioning 2.0.0](http://semver.org/) format.
 
 ### Added
 
+- BMI input `RSURF_SNOW` (s m-1): the snow surface resistance of the OPT_RSF = 4 RSURF blend, settable as a
+  model_params value for parameter estimation; an independent of the Tapenade head.
 - `tapenade/canopy_energy/`: Tapenade 3.16 tangent and reverse of one step (32 independents,
   14 dependents) with p/t/a tests on the stack's inputs; `tapenade/BBGeneralLib` (hypot).
 

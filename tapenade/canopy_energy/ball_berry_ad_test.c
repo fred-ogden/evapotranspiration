@@ -85,23 +85,24 @@ static const char *const independent_names[NIN] = {
     "TV_start", "TAH_start", "EAH_start", "air_temperature", "surface_pressure", "specific_humidity",
     "shortwave_down", "longwave_down", "wind_x", "wind_y", "BTRAN", "TG", "RSURF", "FSNO", "SNOWH",
     "ALBSND_visible", "ALBSND_nir", "ALBSNI_visible", "ALBSNI_nir", "FWET", "CANLIQ", "CANICE", "PAHV", "SMC_1",
-    "MP", "VCMX25", "BP", "QE25", "CWP", "SHDFAC", "Z0M", "DLEAF" };
+    "MP", "VCMX25", "BP", "QE25", "CWP", "SHDFAC", "Z0M", "DLEAF", "RSURF_SNOW" };
 static const double typical_scale[NIN] = {
     1.0, 1.0, 10.0, 1.0, 100.0, 1.0e-3,
     10.0, 10.0, 1.0, 1.0, 0.1, 1.0, 10.0, 0.1, 0.1,
     0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 1.0, 0.1,
-    1.0, 10.0, 100.0, 0.01, 0.1, 0.1, 0.1, 0.01 };
+    1.0, 10.0, 100.0, 0.01, 0.1, 0.1, 0.1, 0.01, 1.0 };
 /* the bounds of each independent's domain: a central difference must not cross them */
 static const double lower_bound[NIN] = {
     NO_LOWER_BOUND, NO_LOWER_BOUND, 0.0, NO_LOWER_BOUND, 0.0, 0.0,
     0.0, 0.0, NO_LOWER_BOUND, NO_LOWER_BOUND, 0.0, NO_LOWER_BOUND, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, NO_LOWER_BOUND, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
 static const double upper_bound[NIN] = {
     NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND,
     NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND, 1.0, NO_UPPER_BOUND, NO_UPPER_BOUND, 1.0, NO_UPPER_BOUND,
     1.0, 1.0, 1.0, 1.0, 1.0, NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND, 1.0,
-    NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND, 1.0, NO_UPPER_BOUND, NO_UPPER_BOUND };
+    NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND, NO_UPPER_BOUND, 1.0, NO_UPPER_BOUND, NO_UPPER_BOUND,
+    NO_UPPER_BOUND };
 static const char *const dependent_names[NOUT] = {
     "ETRAN", "EVC", "SAG", "ground_longwave_absorbed", "TAH", "EAH", "RAHG", "TV", "LATHEAV",
     "fusion_heat", "heat_storage", "RSURF_with_snow", "FVEG", "PET" };
@@ -247,6 +248,7 @@ static void pack_independents(const BallBerryMethod6Parameters *p, const BallBer
     x[BB_HEAD_IN_GREEN_VEGETATION_FRACTION] = s->green_vegetation_fraction;
     x[BB_HEAD_IN_MOMENTUM_ROUGHNESS_LENGTH] = p->momentum_roughness_length_m;
     x[BB_HEAD_IN_LEAF_DIMENSION] = p->characteristic_leaf_dimension_m;
+    x[BB_HEAD_IN_SNOW_SURFACE_RESISTANCE] = p->surface_resistance_snow_s_per_m;
 }
 
 /* production's outputs after the step, in the head's dependent order */

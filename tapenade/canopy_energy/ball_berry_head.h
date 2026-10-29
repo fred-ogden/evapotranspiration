@@ -61,7 +61,8 @@
 #define BB_HEAD_IN_GREEN_VEGETATION_FRACTION        29   /* [SHDFAC] */
 #define BB_HEAD_IN_MOMENTUM_ROUGHNESS_LENGTH        30   /* [Z0MVT] m */
 #define BB_HEAD_IN_LEAF_DIMENSION                   31   /* [DLEAF] m */
-#define BB_HEAD_INDEPENDENT_COUNT                   32
+#define BB_HEAD_IN_SNOW_SURFACE_RESISTANCE          32   /* [RSURF_SNOW] s/m, FLO 10/28 */
+#define BB_HEAD_INDEPENDENT_COUNT                   33
 
 /* ---- dependents: the coupling outputs (the freezing rate, NaN with the Noah-MP physics, and COSZ, set
  *      by the time inputs alone, left out) and the PET */
