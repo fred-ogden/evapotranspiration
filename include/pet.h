@@ -4,6 +4,7 @@
 #include "ball_berry_state.h"
 #include "noahmp_stomata.h"
 #include "ball_berry_helpers.h"
+#include "ball_berry_canopy_physics.h"   /* FLO 10/28 */
 
 #include <stdio.h>
 #include <math.h>
@@ -336,6 +337,13 @@ void pet_unit_tests(pet_model* model);
 //   bb6_validate_time_input            range checks used by BMI set_value
 extern int bb6_initialize_from_configuration(pet_model *pet, const char *configuration_file_path);
 extern int bb6_build_canopy_input(pet_model *pet);
+// FLO 10/28: one step is a preparation (not differentiated) and the physics (ball_berry_canopy_physics.h):
+//   bb6_prepare_step_inputs            the checks, solar geometry, LAI/SAI and NaN conventions -> step inputs
+//   bb6_store_canopy_input_results     the canopy input's coupling outputs and no-canopy values into the model
+//   bb6_set_nested_solver_controls     the nested solver's controls in pet->bb_stability_input
+extern int bb6_prepare_step_inputs(pet_model *pet, BallBerryStepInputs *step);
+extern void bb6_store_canopy_input_results(pet_model *pet, const BallBerryStepResults *results);
+extern void bb6_set_nested_solver_controls(pet_model *pet);
 extern int bb6_validate_coupling_inputs(const BallBerryCouplingInputs *coupling);
 extern int bb6_validate_time_input(const char *time_variable_name, double value);
 

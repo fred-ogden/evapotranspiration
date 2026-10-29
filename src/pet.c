@@ -92,10 +92,74 @@ static int bb6_write_diagnostic_summary(pet_model *model)
  * update() calls it through run_pet(); a differentiable stack calls it directly
  * (dcfe-noahmp-stack phase 1, change 5). The code is the method 6 branch of run_pet() before
  * 10/27, unchanged. Returns 0 or -1. */
+/* FLO 10/28: the coupling outputs, carried canopy state, transpiration and PET of a step from the physics
+ * results (the BMI reports the Noah-MP physics' freezing rate as NaN). */
+static void bb6_store_step_results(pet_model *model, const BallBerryStepResults *results)
+{
+  BallBerryCouplingInputs *coupling_inputs = &model->bb_coupling_inputs;
+  model->bb_coupling_outputs = results->coupling_outputs;
+  if (results->freezing_rate_defined == 0) model->bb_coupling_outputs.canopy_freezing_rate_mm_per_s = NAN;
+  // FLO 10/24: the canopy state at the end of this step is the state at the start of the next
+  if (model->bb_parameters.carry_canopy_state_between_steps == 1) {
+    coupling_inputs->vegetation_temperature_start_of_step_K = results->coupling_outputs.vegetation_temperature_K;
+    coupling_inputs->canopy_air_temperature_start_of_step_K = results->coupling_outputs.canopy_air_temperature_K;
+    coupling_inputs->canopy_air_vapor_pressure_start_of_step_Pa = results->coupling_outputs.canopy_air_vapor_pressure_Pa;
+  }
+}
+
+/* FLO 10/28: one step with the VEGE_FLUX loop1 replica (bb_noahmp_exact_iteration = 1): the preparation
+ * (bb6_prepare_step_inputs), the physics (ball_berry_method6_physics_step, ball_berry_canopy_physics.c,
+ * the part Tapenade differentiates), then the trace and summary files and the results into the model.
+ * The same results, messages and files as the code before 10/28. Returns 0 or -1. */
+static int ball_berry_method6_exact_core_step(pet_model *model)
+{
+  BallBerryStepInputs step;
+  BallBerryStepResults results;
+  NoahmpStabilityOutput solution;
+  NoahmpVegeFluxExactTrace trace;
+  FILE *trace_stream;
+  int status;
+  if (bb6_prepare_step_inputs(model, &step) != 0) {
+    fprintf(stderr, "ERROR: PET method 6 could not build the canopy input for this step.\n");
+    return -1;
+  }
+  status = ball_berry_method6_physics_step(&model->bb_parameters, &step, &model->bb_stability_input, &solution,
+                                           &trace, &results);
+  bb6_store_canopy_input_results(model, &results);
+  if (results.no_canopy_this_step == 1) {
+    bb6_store_step_results(model, &results);
+    model->bb_transpiration_m_per_s = 0.0;
+    model->pet_m_per_s = 0.0;
+    return 0;
+  }
+  bb6_set_nested_solver_controls(model);
+  model->bb_stability_input_ready = FALSE; // Consume forcing even if the solver fails.
+  // FLO 10/20: optional per-iteration trace
+  if (model->bb_iteration_trace_file != NULL) {
+    trace_stream = fopen(model->bb_iteration_trace_file, "w");
+    if (trace_stream == NULL) {
+      fprintf(stderr, "ERROR: cannot open bb_iteration_trace_file %s\n", model->bb_iteration_trace_file);
+      return -1;
+    }
+    noahmp_vege_flux_exact_write_trace(trace_stream, &trace);
+    fclose(trace_stream);
+  }
+  if (status != 0) return -1;
+  model->bb_last_output = solution;
+  bb6_store_step_results(model, &results);
+  // FLO 10/21: optional diagnostic summary of this update (Noah-MP names), for comparison with
+  // the Fortran NWM Noah-MP reference. Overwritten at each update: it holds the last step.
+  if (model->bb_diagnostic_summary_file != NULL && bb6_write_diagnostic_summary(model) != 0) return -1;
+  model->bb_transpiration_m_per_s = results.transpiration_m_per_s;
+  model->pet_m_per_s = results.pet_m_per_s;
+  return 0;
+}
+
 int ball_berry_method6_core_step(pet_model *model)
 {
   NoahmpStabilityInput input;
   NoahmpStabilityOutput output;
+  if (model->bb_noahmp_exact_iteration == TRUE) return ball_berry_method6_exact_core_step(model);   /* FLO 10/28 */
   /* FLO 10/21: build this step's canopy input from the BMI forcing, time and coupling inputs
    * and the parameters read at Initialize (ball_berry_method6_inputs.c). */
   if (bb6_build_canopy_input(model) != 0) {

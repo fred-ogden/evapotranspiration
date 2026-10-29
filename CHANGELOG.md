@@ -2,6 +2,28 @@ All notable changes to this project will be documented in this file.
 We follow the [Semantic Versioning 2.0.0](http://semver.org/) format.
 
 
+## Unreleased (stack-phase1, dcfe-noahmp-stack) - 2026-10-28
+
+### Changed
+
+- PET method 6, the exact solver (bb_noahmp_exact_iteration = 1): one step is a preparation
+  (`bb6_prepare_step_inputs`: the checks, solar geometry, LAI/SAI, NaN conventions, messages) and
+  the physics on resolved inputs (`ball_berry_method6_physics_step`, new
+  `src/ball_berry_canopy_physics.c`), in the form Tapenade differentiates: one return per function,
+  no printf, isnan, ternaries, break, NAN, whole-structure assignment or memset (generated
+  field-by-field copies, `src/ball_berry_struct_copies.c`), and every chain of multiplications and
+  divisions written one operation per statement. The exact solver records its iteration trace and
+  the caller writes it. EVC = MIN(latent limit, EVC) is a comparison (fmin of +0 and -0 may return
+  either zero). The nested solver is unchanged and uses the same canopy input.
+- Bitwise the same as before: the 13 ctests and their output files, a replay of the
+  dcfe-noahmp-stack inputs of the six 01123000 divides over 2012-10-01 to 2019-07-12 (356,544
+  divide-hours, every coupling output), the CIESM coupled ctests and the stack's core path test.
+
+### Added
+
+- `tapenade/canopy_energy/`: Tapenade 3.16 tangent and reverse of one step (32 independents,
+  14 dependents) with p/t/a tests on the stack's inputs; `tapenade/BBGeneralLib` (hypot).
+
 ## Unreleased (feature/ball-berry-canopy-state) - 2026-10-24
 
 ### Added

@@ -22,7 +22,7 @@ include_directory="./include"
 executable="./run_bmi_forcings_read"
 method_configuration_files="method_1_radiation_balance.cfg method_2_aerodynamic_method.cfg method_3_combination_method.cfg method_4_priestley_taylor_method.cfg method_5_penman_monteith_method.cfg"
 
-PET_SOURCES="${source_directory}/pet.c ${source_directory}/bmi_pet.c ${source_directory}/noahmp_stomata.c ${source_directory}/ball_berry_state.c ${source_directory}/ball_berry_helpers.c ${source_directory}/ball_berry_method6_inputs.c"
+PET_SOURCES="${source_directory}/pet.c ${source_directory}/bmi_pet.c ${source_directory}/noahmp_stomata.c ${source_directory}/ball_berry_state.c ${source_directory}/ball_berry_helpers.c ${source_directory}/ball_berry_canopy_physics.c ${source_directory}/ball_berry_struct_copies.c ${source_directory}/ball_berry_method6_inputs.c"
 
 if [ "${1:-}" = "-h" ]; then sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
 

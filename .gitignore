@@ -16,3 +16,6 @@ output/
 fred/
 noah-mp_test_case/
 *.patch
+!run*.csh
+# FLO 10/28: Tapenade work and generated code (tapenade/canopy_energy/run_tapenade_ball_berry.csh)
+tapenade_work/

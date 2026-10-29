@@ -11,7 +11,11 @@
 //       the coupling inputs). The parsed key table is local to this call and freed before it
 //       returns, so nothing here is static or shared between model instances.
 //
-//   bb6_build_canopy_input             called by run_pet at every BMI update
+//   bb6_prepare_step_inputs            FLO 10/28: called by the core step at every BMI update
+//       The checks, solar geometry, LAI/SAI and NaN conventions of a step, into the step inputs of
+//       the physics (ball_berry_canopy_physics.c, which builds the canopy input; differentiated).
+//
+//   bb6_build_canopy_input             the preparation and the canopy input physics (nested solver)
 //       Builds the canopy solver input (pet->bb_stability_input) from
 //         - the BMI forcing variables (pet->aorc, set by the driver with set_value),
 //         - the BMI time variables (pet->bb_time_inputs), used only for the monthly LAI/SAI table,
@@ -45,19 +49,9 @@
 #include <string.h>
 #include <math.h>
 #include "pet.h"
+#include "ball_berry_canopy_physics.h"
 
 // ---- Noah-MP constants (module_sf_noahmplsm.F, MPTABLE.TBL)
-static const double noahmp_specific_heat_air_j_per_kg_k = 1004.64;       // CPAIR
-static const double noahmp_gas_constant_dry_air_j_per_kg_k = 287.04;     // RAIR
-static const double noahmp_latent_heat_vaporization_j_per_kg = 2.5104e6; // HVAP
-static const double noahmp_latent_heat_sublimation_j_per_kg = 2.8440e6;  // HSUB
-static const double noahmp_stefan_boltzmann_w_per_m2_k4 = 5.67e-8;       // SB
-static const double noahmp_freezing_point_k = 273.16;                    // TFRZ
-static const double noahmp_minimum_positive_value = 1.0e-6;              // MPE
-static const double noahmp_bare_soil_roughness_m = 0.002;                // Z0 in ENERGY
-static const double noahmp_snow_surface_roughness_m = 0.002;             // Z0SNO
-static const double noahmp_minimum_wind_speed_m_per_s = 1.0;             // UR >= 1 in ENERGY
-static const double noahmp_maximum_effective_area_index = 6.0;           // VAIE = MIN(6, VAI)
 
 // ---------------------------------------------------------------------------------------------
 // Configuration key table, local to one bb6_initialize_from_configuration call.
@@ -603,101 +597,47 @@ static int interpolate_monthly_lai_sai(const BallBerryMethod6Parameters *paramet
 // ---------------------------------------------------------------------------------------------
 // BMI update: build the canopy solver input for this step. Returns 0 on success, -1 on error.
 // ---------------------------------------------------------------------------------------------
-int bb6_build_canopy_input(pet_model *pet)
+// FLO 10/28: the preparation of one step: the checks, the solar geometry, the leaf and stem area index
+// (monthly table or BMI values), and the NaN conventions of the BMI inputs resolved into flags, in a
+// BallBerryStepInputs for the physics (ball_berry_canopy_physics.c, differentiated by Tapenade). The checks
+// and messages are those of bb6_build_canopy_input() before 10/28, in the same order. Returns 0 or -1.
+int bb6_prepare_step_inputs(pet_model *pet, BallBerryStepInputs *step)
 {
-    NoahmpStabilityInput *input;
     const BallBerryMethod6Parameters *parameters;
-    const BallBerrySolverControls *solver;
     const BallBerryCouplingInputs *coupling;
-    double air_temperature_k, surface_pressure_pa, specific_humidity_kg_per_kg, wind_speed_m_per_s;
-    double downward_shortwave_w_per_m2, downward_longwave_w_per_m2;
-    double air_vapor_pressure_pa, air_density_kg_per_m3;
-    double leaf_area_index, stem_area_index, vegetation_area_index, green_vegetation_fraction;
-    double zero_plane_displacement_m, reference_height_m;
-    double initial_vegetation_temperature_k, initial_canopy_air_temperature_k;
-    double initial_canopy_air_vapor_pressure_pa, latent_heat_vegetation_j_per_kg;
-    // Noah-MP names used in the science code below
-    double BTRAN, TG, RSURF, FSNO, SNOWH, FWET, CANLIQ, CANICE;
-    double ALBSND[2], ALBSNI[2], ALBSOD[2], ALBSOI[2];
-    double HVT, HVB, DB, FB, SNOWHC, ELAI, ESAI, ZPDG, Z0MG, EG, COSZ;
-    int band;
+    double COSZ, COSZ_HORIZ;
+    double leaf_area_index, stem_area_index;
 
-    if (pet == NULL) return -1;
+    if (pet == NULL || step == NULL) return -1;
     pet->bb_stability_input_ready = 0;
     parameters = &pet->bb_parameters;
-    solver = &pet->bb_solver;
     coupling = &pet->bb_coupling_inputs;
     if (bb6_validate_coupling_inputs(coupling) != 0) {
         fprintf(stderr, "ERROR: PET method 6 coupling input out of range\n");
         return -1;
     }
-    input = &pet->bb_stability_input;
-    memset(input, 0, sizeof(*input));
 
-    // ---- map the BMI coupling inputs (long names) to the Noah-MP names
-    BTRAN  = coupling->root_stress_factor_0_to_1;   // soil moisture factor for stomatal resistance
-    RSURF  = coupling->surface_resistance_s_per_m;  // ground surface resistance to evaporation (s/m)
-    FSNO   = coupling->snow_cover_fraction;         // fraction of the ground covered by snow
-    SNOWH  = coupling->snow_depth_m;                // snow depth (m)
-    ALBSND[0] = coupling->snow_albedo_direct_visible;   // snow albedo, direct, visible
-    ALBSND[1] = coupling->snow_albedo_direct_nir;       // snow albedo, direct, near infrared
-    ALBSNI[0] = coupling->snow_albedo_diffuse_visible;  // snow albedo, diffuse, visible
-    ALBSNI[1] = coupling->snow_albedo_diffuse_nir;      // snow albedo, diffuse, near infrared
-    FWET   = coupling->canopy_wetted_fraction;      // wetted or snowed fraction of the canopy
-    CANLIQ = coupling->canopy_liquid_water_mm;      // intercepted liquid water (mm)
-    CANICE = coupling->canopy_ice_mm;               // intercepted ice (mm)
-
-    // ---- BMI forcing (set by the driver), prepared as Noah-MP ATM and ENERGY do
-    air_temperature_k = pet->aorc.air_temperature_2m_K;                       // SFCTMP
-    surface_pressure_pa = pet->aorc.surface_pressure_Pa;                       // SFCPRS
-    specific_humidity_kg_per_kg = pet->aorc.specific_humidity_2m_kg_per_kg;   // QAIR
-    downward_shortwave_w_per_m2 = pet->aorc.incoming_shortwave_W_per_m2;       // SOLDN
-    downward_longwave_w_per_m2 = pet->aorc.incoming_longwave_W_per_m2;         // LWDN
-    if (!(air_temperature_k > 150.0 && air_temperature_k < 400.0) || !(surface_pressure_pa > 0.0) ||
-        !(specific_humidity_kg_per_kg >= 0.0 && specific_humidity_kg_per_kg < 1.0) ||
-        !(downward_shortwave_w_per_m2 >= 0.0) || !(downward_longwave_w_per_m2 >= 0.0) ||
+    // ---- BMI forcing (set by the driver)
+    if (!(pet->aorc.air_temperature_2m_K > 150.0 && pet->aorc.air_temperature_2m_K < 400.0) ||
+        !(pet->aorc.surface_pressure_Pa > 0.0) ||
+        !(pet->aorc.specific_humidity_2m_kg_per_kg >= 0.0 && pet->aorc.specific_humidity_2m_kg_per_kg < 1.0) ||
+        !(pet->aorc.incoming_shortwave_W_per_m2 >= 0.0) || !(pet->aorc.incoming_longwave_W_per_m2 >= 0.0) ||
         !isfinite(pet->aorc.u_wind_speed_10m_m_per_s) || !isfinite(pet->aorc.v_wind_speed_10m_m_per_s)) {
         fprintf(stderr, "ERROR: PET method 6 forcing missing or out of range (set it through BMI before update)\n");
         return -1;
     }
-    wind_speed_m_per_s = fmax(hypot(pet->aorc.u_wind_speed_10m_m_per_s, pet->aorc.v_wind_speed_10m_m_per_s),
-                              noahmp_minimum_wind_speed_m_per_s);              // UR
-    air_vapor_pressure_pa = specific_humidity_kg_per_kg * surface_pressure_pa /
-                            (0.622 + 0.378 * specific_humidity_kg_per_kg);     // EAIR
-    air_density_kg_per_m3 = (surface_pressure_pa - 0.378 * air_vapor_pressure_pa) /
-                            (noahmp_gas_constant_dry_air_j_per_kg_k * air_temperature_k);   // RHOAIR
 
-    // ---- FLO 10/26: snow-free soil albedo, configured or GROUNDALB from the top-disc soil moisture
-    for (band = 0; band < 2; ++band) {
-        if (parameters->soil_albedo_option == 1) {
-            double INC;
-            if (isnan(coupling->soil_top_disc_moisture_content)) {
-                fprintf(stderr, "ERROR: PET method 6 with soil_albedo_option = 1 needs soil_top_disc_moisture_content\n");
-                return -1;
-            }
-            INC = fmax(0.11 - 0.40 * coupling->soil_top_disc_moisture_content, 0.0);
-            ALBSOD[band] = fmin(parameters->soil_albedo_saturated[band] + INC, parameters->soil_albedo_dry[band]);
-            ALBSOI[band] = ALBSOD[band];
-        } else {
-            ALBSOD[band] = parameters->soil_albedo_direct[band];
-            ALBSOI[band] = parameters->soil_albedo_diffuse[band];
-        }
+    // ---- FLO 10/26: GROUNDALB from the top-disc soil moisture needs it supplied
+    if (parameters->soil_albedo_option == 1 && isnan(coupling->soil_top_disc_moisture_content)) {
+        fprintf(stderr, "ERROR: PET method 6 with soil_albedo_option = 1 needs soil_top_disc_moisture_content\n");
+        return -1;
     }
 
-    // ---- FLO 10/26: solar geometry. Option 1: COSZ from the time inputs; the shortwave is corrected to
-    //      the sloped terrain as NOM ATM does (SWDOWN = SOLDN*COSZ/COSZ_HORIZ, at most the solar constant
-    //      times COSZ; 0 when the sun is down); with zero slope COSZ = COSZ_HORIZ and SWDOWN = SOLDN.
+    // ---- FLO 10/26: solar geometry. Option 1: COSZ and COSZ_HORIZ from the time inputs (the physics
+    //      corrects the shortwave to the sloped terrain); option 0: the configured COSZ.
+    COSZ_HORIZ = 0.0;
     if (parameters->solar_geometry_option == 1) {
-        double COSZ_HORIZ;
-        const double solar_constant_w_per_m2 = 1360.0;
         if (bb6_solar_geometry(pet, &COSZ, &COSZ_HORIZ) != 0) return -1;
-        if (COSZ <= 0.0 || COSZ_HORIZ <= 0.0) {
-            downward_shortwave_w_per_m2 = 0.0;
-        } else if (downward_shortwave_w_per_m2 / COSZ_HORIZ > solar_constant_w_per_m2) {
-            downward_shortwave_w_per_m2 = solar_constant_w_per_m2 * COSZ;
-        } else {
-            downward_shortwave_w_per_m2 = downward_shortwave_w_per_m2 * (COSZ / COSZ_HORIZ);
-        }
     } else {
         COSZ = parameters->cosine_solar_zenith_angle;
     }
@@ -730,237 +670,73 @@ int bb6_build_canopy_input(pet_model *pet)
         stem_area_index = pet->bb_canopy.sai;
     }
     if (ball_berry_state_validate(&pet->bb_canopy) != 0) return -1;
-    // PHENOLOGY small-value checks, applied to the working copies
-    if (stem_area_index < 0.05) stem_area_index = 0.0;
-    if (leaf_area_index < 0.05 || stem_area_index == 0.0) leaf_area_index = 0.0;
 
-    // ---- burial of the canopy by snow, as in PHENOLOGY (ELAI, ESAI = exposed indices)
-    HVT = parameters->canopy_top_height_m;
-    HVB = parameters->canopy_bottom_height_m;
-    DB = fmin(fmax(SNOWH - HVB, 0.0), HVT - HVB);
-    FB = DB / fmax(1.0e-06, HVT - HVB);
-    if (HVT > 0.0 && HVT <= 1.0) {                  // short vegetation (MB: 1.0 and 0.2 in Noah-MP)
-        SNOWHC = HVT * exp(-SNOWH / 0.2);
-        if (SNOWHC <= SNOWH) FB = 1.0;
-        else FB = SNOWH / SNOWHC;
+    // ---- the step inputs
+    step->air_temperature_K = pet->aorc.air_temperature_2m_K;                    // SFCTMP
+    step->surface_pressure_Pa = pet->aorc.surface_pressure_Pa;                    // SFCPRS
+    step->specific_humidity_kg_per_kg = pet->aorc.specific_humidity_2m_kg_per_kg;   // QAIR
+    step->shortwave_down_W_per_m2 = pet->aorc.incoming_shortwave_W_per_m2;        // SOLDN
+    step->longwave_down_W_per_m2 = pet->aorc.incoming_longwave_W_per_m2;          // LWDN
+    step->wind_x_m_per_s = pet->aorc.u_wind_speed_10m_m_per_s;
+    step->wind_y_m_per_s = pet->aorc.v_wind_speed_10m_m_per_s;
+    step->cosine_solar_zenith_angle = COSZ;
+    step->cosine_solar_zenith_angle_horizontal = COSZ_HORIZ;
+    step->leaf_area_index = leaf_area_index;
+    step->stem_area_index = stem_area_index;
+    step->green_vegetation_fraction = pet->bb_canopy.shdfac;                      // FVEG = SHDFAC
+    step->canopy_wind_parameter = pet->bb_cwp;                                    // CWP
+    step->stomata = pet->bb_stomata;                                              // includes MP, VCMX25
+    step->coupling = *coupling;
+    step->ground_temperature_known = isnan(coupling->ground_skin_temperature_K) ? 0 : 1;
+    step->vegetation_temperature_known = isnan(coupling->vegetation_temperature_start_of_step_K) ? 0 : 1;
+    step->canopy_air_temperature_known = isnan(coupling->canopy_air_temperature_start_of_step_K) ? 0 : 1;
+    step->canopy_air_vapor_pressure_known = isnan(coupling->canopy_air_vapor_pressure_start_of_step_Pa) ? 0 : 1;
+    step->time_step_s = pet->bmi.time_step_size_s;                               // DT
+    return 0;
+}
+
+// FLO 10/28: the canopy input results kept in the model: the coupling outputs the canopy input sets and
+// the no-canopy flag and values (as bb6_build_canopy_input() set them before 10/28).
+void bb6_store_canopy_input_results(pet_model *pet, const BallBerryStepResults *results)
+{
+    pet->bb_coupling_outputs.cosine_solar_zenith_angle = results->coupling_outputs.cosine_solar_zenith_angle;
+    pet->bb_coupling_outputs.vegetated_fraction = results->coupling_outputs.vegetated_fraction;
+    pet->bb_coupling_outputs.surface_resistance_with_snow_s_per_m =
+        results->coupling_outputs.surface_resistance_with_snow_s_per_m;
+    pet->bb_no_canopy_this_step = results->no_canopy_this_step;
+    if (results->no_canopy_this_step == 1) {
+        pet->bb_no_canopy_ground_shortwave_W_per_m2 = results->no_canopy_ground_shortwave_W_per_m2;
+        pet->bb_no_canopy_ground_emissivity = results->no_canopy_ground_emissivity;
+        pet->bb_no_canopy_air_temperature_K = results->no_canopy_air_temperature_K;
+        pet->bb_no_canopy_air_vapor_pressure_Pa = results->no_canopy_air_vapor_pressure_Pa;
+        pet->bb_no_canopy_vegetation_temperature_K = results->no_canopy_vegetation_temperature_K;
     }
-    ELAI = leaf_area_index * (1.0 - FB);
-    ESAI = stem_area_index * (1.0 - FB);
-    if (ESAI < 0.05) ESAI = 0.0;
-    if (ELAI < 0.05 || ESAI == 0.0) ELAI = 0.0;
-    leaf_area_index = ELAI;                         // from here on, the exposed indices
-    stem_area_index = ESAI;
-    vegetation_area_index = leaf_area_index + stem_area_index;
-    green_vegetation_fraction = pet->bb_canopy.shdfac;   // FVEG
-    // FLO 10/26: PHENOLOGY DVEG = 1 floor, and FVEG = 0 without an exposed canopy (NOAHMP_SFLX)
-    if (parameters->dynamic_vegetation_option == 1 && green_vegetation_fraction <= 0.05) green_vegetation_fraction = 0.05;
-    if (vegetation_area_index == 0.0) green_vegetation_fraction = 0.0;
-    pet->bb_coupling_outputs.vegetated_fraction = green_vegetation_fraction;
+}
 
-    // FLO 10/26: surface resistance with snow, OPT_RSF = 4 (EnergyMain)
-    if (parameters->surface_resistance_snow_blend_option == 1) {
-        RSURF = 1.0 / (FSNO * (1.0 / parameters->surface_resistance_snow_s_per_m) +
-                       (1.0 - FSNO) * (1.0 / fmax(RSURF, 0.001)));
-    }
-    pet->bb_coupling_outputs.surface_resistance_with_snow_s_per_m = RSURF;
-
-    // FLO 10/26: no exposed canopy (buried by snow, or bare): Noah-MP does not call VEGE_FLUX. The
-    // ground absorbs the shortwave without a canopy; TAH and EAH stay as ATM set them; TV is not updated.
-    pet->bb_no_canopy_this_step = 0;
-    if (!(vegetation_area_index > 0.0)) {
-        double qv = specific_humidity_kg_per_kg / (1.0 - specific_humidity_kg_per_kg);
-        double ground_shortwave = 0.0;
-        if (COSZ > 0.0) {
-            double solad[2], solai[2];
-            solad[0] = downward_shortwave_w_per_m2 * parameters->direct_shortwave_fraction *
-                       parameters->visible_shortwave_fraction;
-            solad[1] = downward_shortwave_w_per_m2 * parameters->direct_shortwave_fraction *
-                       (1.0 - parameters->visible_shortwave_fraction);
-            solai[0] = downward_shortwave_w_per_m2 * (1.0 - parameters->direct_shortwave_fraction) *
-                       parameters->visible_shortwave_fraction;
-            solai[1] = downward_shortwave_w_per_m2 * (1.0 - parameters->direct_shortwave_fraction) *
-                       (1.0 - parameters->visible_shortwave_fraction);
-            for (band = 0; band < 2; ++band) {
-                double ground_albedo_direct = ALBSOD[band] * (1.0 - FSNO) + ALBSND[band] * FSNO;
-                double ground_albedo_diffuse = ALBSOI[band] * (1.0 - FSNO) + ALBSNI[band] * FSNO;
-                ground_shortwave += solad[band] * (1.0 - ground_albedo_direct) + solai[band] * (1.0 - ground_albedo_diffuse);
-            }
-        }
-        pet->bb_no_canopy_this_step = 1;
-        pet->bb_no_canopy_ground_shortwave_W_per_m2 = ground_shortwave;
-        pet->bb_no_canopy_ground_emissivity = parameters->soil_emissivity * (1.0 - FSNO) + FSNO;
-        pet->bb_no_canopy_air_temperature_K = air_temperature_k;
-        pet->bb_no_canopy_air_vapor_pressure_Pa = surface_pressure_pa * qv / (0.622 + qv);
-        pet->bb_no_canopy_vegetation_temperature_K = isnan(coupling->vegetation_temperature_start_of_step_K) ?
-            air_temperature_k : coupling->vegetation_temperature_start_of_step_K;
-        return 0;
-    }
-
-    // ---- ENERGY geometry: ZPD = 0.65*HVT, raised to SNOWH by deep snow; ZLVL = MAX(ZPD,HVT) + ZREF,
-    //      raised if the snow surface (ZPDG = SNOWH) reaches it; Z0MG blends bare soil and snow.
-    zero_plane_displacement_m = 0.65 * HVT;
-    if (SNOWH > zero_plane_displacement_m) zero_plane_displacement_m = SNOWH;
-    reference_height_m = fmax(zero_plane_displacement_m, HVT) + parameters->forcing_height_above_canopy_top_m;
-    ZPDG = SNOWH;
-    if (ZPDG >= reference_height_m) reference_height_m = ZPDG + parameters->forcing_height_above_canopy_top_m;
-    Z0MG = noahmp_bare_soil_roughness_m * (1.0 - FSNO) + FSNO * noahmp_snow_surface_roughness_m;
-
-    // ---- initial canopy state: cold start (forcing or configured values) ...
-    if (parameters->initialize_canopy_state_from_forcing == 1) {
-        initial_vegetation_temperature_k = air_temperature_k;
-        initial_canopy_air_temperature_k = air_temperature_k;
-        initial_canopy_air_vapor_pressure_pa = air_vapor_pressure_pa;
-    } else if (parameters->initialize_canopy_state_from_forcing == 2) {
-        // FLO 10/27: NOM cold start: TV configured (NOM 298 K), TAH = SFCTMP and EAH from the
-        // mixing ratio, as NOM sets them before its first step
-        double mixing_ratio_kg_per_kg = specific_humidity_kg_per_kg / (1.0 - specific_humidity_kg_per_kg);
-        initial_vegetation_temperature_k = parameters->initial_vegetation_temperature_k;
-        initial_canopy_air_temperature_k = air_temperature_k;
-        initial_canopy_air_vapor_pressure_pa = surface_pressure_pa * mixing_ratio_kg_per_kg /
-                                               (0.622 + mixing_ratio_kg_per_kg);
-    } else {
-        initial_vegetation_temperature_k = parameters->initial_vegetation_temperature_k;
-        initial_canopy_air_temperature_k = parameters->initial_canopy_air_temperature_k;
-        initial_canopy_air_vapor_pressure_pa = parameters->initial_canopy_air_vapor_pressure_pa;
-    }
-    // FLO 10/24: ... unless the start-of-step state is known (carried from the previous step or set)
-    if (!isnan(coupling->vegetation_temperature_start_of_step_K))
-        initial_vegetation_temperature_k = coupling->vegetation_temperature_start_of_step_K;
-    if (!isnan(coupling->canopy_air_temperature_start_of_step_K))
-        initial_canopy_air_temperature_k = coupling->canopy_air_temperature_start_of_step_K;
-    if (!isnan(coupling->canopy_air_vapor_pressure_start_of_step_Pa))
-        initial_canopy_air_vapor_pressure_pa = coupling->canopy_air_vapor_pressure_start_of_step_Pa;
-    latent_heat_vegetation_j_per_kg = (initial_vegetation_temperature_k > noahmp_freezing_point_k) ?
-        noahmp_latent_heat_vaporization_j_per_kg : noahmp_latent_heat_sublimation_j_per_kg;   // LATHEAV
-
-    // ---- radiation (ALBEDO, TWOSTREAM, SURRAD)
-    NoahmpAlbedoInput *radiation = &input->canopy.radiation_stomata.radiation;
-    radiation->cosz = COSZ;
-    radiation->elai = leaf_area_index;
-    radiation->esai = stem_area_index;
-    radiation->fveg = green_vegetation_fraction;
-    radiation->fwet = FWET;
-    radiation->tv_k = initial_vegetation_temperature_k;
-    radiation->xl = parameters->leaf_orientation_index;
-    radiation->omegas[0] = 0.8;     // OMEGAS, MPTABLE rad_parameters (weighted by FWET below TFRZ)
-    radiation->omegas[1] = 0.4;
-    radiation->betads = 0.5;        // BETADS
-    radiation->betais = 0.5;        // BETAIS
-    for (band = 0; band < 2; ++band) {       // 0 = visible, 1 = near infrared
-        radiation->rhol[band] = parameters->leaf_reflectance[band];
-        radiation->rhos[band] = parameters->stem_reflectance[band];
-        radiation->taul[band] = parameters->leaf_transmittance[band];
-        radiation->taus[band] = parameters->stem_transmittance[band];
-        // GROUNDALB: ALBGRD = ALBSOD*(1-FSNO) + ALBSND*FSNO, ALBGRI = ALBSOI*(1-FSNO) + ALBSNI*FSNO
-        radiation->albgrd[band] = ALBSOD[band] * (1.0 - FSNO) + ALBSND[band] * FSNO;
-        radiation->albgri[band] = ALBSOI[band] * (1.0 - FSNO) + ALBSNI[band] * FSNO;
-    }
-    radiation->solad[0] = downward_shortwave_w_per_m2 * parameters->direct_shortwave_fraction *
-                          parameters->visible_shortwave_fraction;
-    radiation->solad[1] = downward_shortwave_w_per_m2 * parameters->direct_shortwave_fraction *
-                          (1.0 - parameters->visible_shortwave_fraction);
-    radiation->solai[0] = downward_shortwave_w_per_m2 * (1.0 - parameters->direct_shortwave_fraction) *
-                          parameters->visible_shortwave_fraction;
-    radiation->solai[1] = downward_shortwave_w_per_m2 * (1.0 - parameters->direct_shortwave_fraction) *
-                          (1.0 - parameters->visible_shortwave_fraction);
-
-    // ---- physiology (STOMATA): current BMI values, including MP and VCMX25
-    input->canopy.radiation_stomata.physiology = pet->bb_stomata;
-
-    NoahmpStomataInputs *canopy_air = &input->canopy.radiation_stomata.canopy_air;
-    canopy_air->mpe = noahmp_minimum_positive_value;
-    canopy_air->foln = parameters->foliage_nitrogen_percent;
-    canopy_air->igs = (initial_vegetation_temperature_k > parameters->minimum_temperature_for_photosynthesis_k) ? 1.0 : 0.0;
-    canopy_air->ea = initial_canopy_air_vapor_pressure_pa;   // EAH seen by STOMATA on iteration 1
-    canopy_air->sfctmp = air_temperature_k;
-    canopy_air->sfcpres = surface_pressure_pa;
-    canopy_air->co2 = parameters->co2_mole_fraction * surface_pressure_pa;   // CO2AIR
-    canopy_air->o2 = parameters->o2_mole_fraction * surface_pressure_pa;     // O2AIR
-    canopy_air->btran = BTRAN;                                               // root stress factor
-
-    // ---- foliage energy balance
-    NoahmpVegeFluxInputs *foliage = &input->canopy.foliage;
-    foliage->fveg = green_vegetation_fraction;
-    foliage->vai = vegetation_area_index;
-    foliage->wet_fraction = FWET;
-    foliage->rsurf_s_per_m = RSURF;
-    foliage->air_temperature_k = air_temperature_k;
-    // TG from soil freeze-thaw once supplied through BMI; before that, air temperature + offset
-    if (isnan(coupling->ground_skin_temperature_K))
-        TG = air_temperature_k + parameters->ground_temperature_offset_from_air_k;
-    else
-        TG = coupling->ground_skin_temperature_K;
-    foliage->ground_temperature_k = TG;
-    foliage->foliage_temperature_k = initial_vegetation_temperature_k;
-    foliage->air_vapor_pressure_pa = air_vapor_pressure_pa;
-    foliage->air_density_kg_per_m3 = air_density_kg_per_m3;
-    foliage->cp_air_j_per_kg_k = noahmp_specific_heat_air_j_per_kg_k;
-    foliage->psychrometric_constant_pa_per_k = noahmp_specific_heat_air_j_per_kg_k * surface_pressure_pa /
-                                               (0.622 * latent_heat_vegetation_j_per_kg);   // GAMMAV
-    foliage->incoming_longwave_w_per_m2 = downward_longwave_w_per_m2;
-    foliage->vegetation_emissivity = 1.0 - exp(-(leaf_area_index + stem_area_index));        // EMV
-    EG = parameters->soil_emissivity;                                                         // EG(1)
-    foliage->ground_emissivity = EG * (1.0 - FSNO) + 1.0 * FSNO;                              // EMG
-    foliage->stefan_boltzmann_w_per_m2_k4 = noahmp_stefan_boltzmann_w_per_m2_k4;
-    foliage->canopy_liquid_mm = CANLIQ;
-    foliage->canopy_ice_mm = CANICE;
-    foliage->latent_heat_j_per_kg = latent_heat_vegetation_j_per_kg;
-    foliage->timestep_s = pet->bmi.time_step_size_s;                                          // DT
-    foliage->additional_heat_w_per_m2 = coupling->precipitation_advected_heat_to_canopy_W_per_m2;   // PAHV (FLO 10/24)
-
-    // ---- FLO 10/24: revised canopy energy physics (option 2). With option 1 these stay 0 (memset above),
-    //      which is exactly the Noah-MP calculation.
-    if (parameters->canopy_energy_physics_option == 2) {
-        // C_v = FVEG * c * (ELAI+ESAI) + heat capacity of the intercepted water (CANLIQ, CANICE per ground area)
-        foliage->canopy_heat_capacity_j_per_m2_k =
-            green_vegetation_fraction * parameters->canopy_heat_capacity_per_unit_area_index_j_per_m2_k *
-            vegetation_area_index + (4.188e6 * CANLIQ + 2.094e6 * CANICE) / 1000.0;   // CWAT, CICE (J m-3 K-1)
-        foliage->previous_foliage_temperature_k = initial_vegetation_temperature_k;
-        foliage->phase_change_window_k = parameters->canopy_phase_change_window_k;
-        foliage->canopy_water_total_mm = CANLIQ + CANICE;
-        foliage->canopy_liquid_start_mm = CANLIQ;
-        foliage->frozen_transpiration_ramp_k = parameters->frozen_transpiration_ramp_k;
-        foliage->evaporation_phase_from_latent_heat = 1;
-        input->canopy.hold_radiation_at_start_temperature = 1;
-        input->noahmp_outer_iteration_rule = 1;     // never fails in stable, calm air (see ball_berry_helpers.h)
-    }
-
-    // ---- nested solver controls (ignored by the exact solver); defaults if not configured
+// FLO 10/28: the controls of the nested solver in the canopy input (ignored by the exact solver);
+// defaults if not configured.
+void bb6_set_nested_solver_controls(pet_model *pet)
+{
+    const BallBerrySolverControls *solver = &pet->bb_solver;
+    NoahmpStabilityInput *input = &pet->bb_stability_input;
     input->canopy.maximum_iterations = (solver->maximum_canopy_iterations >= 1.0) ? (int)solver->maximum_canopy_iterations : 60;
     input->canopy.temperature_tolerance_k = (solver->canopy_temperature_tolerance_k > 0.0) ? solver->canopy_temperature_tolerance_k : 1.0e-5;
     input->canopy.maximum_temperature_step_k = (solver->maximum_temperature_step_k > 0.0) ? solver->maximum_temperature_step_k : 100.0;
     input->maximum_stability_iterations = (solver->maximum_stability_iterations >= 2.0) ? (int)solver->maximum_stability_iterations : 40;
     input->resistance_relative_tolerance = (solver->stability_relative_tolerance > 0.0) ? solver->stability_relative_tolerance : 1.0e-5;
+}
 
-    // ---- SFCDIF1 surface layer
-    NoahmpSfcdif1Inputs *surface_layer = &input->surface_layer;
-    surface_layer->air_temperature_k = air_temperature_k;
-    surface_layer->air_density_kg_per_m3 = air_density_kg_per_m3;
-    surface_layer->specific_humidity_kg_per_kg = specific_humidity_kg_per_kg;
-    surface_layer->reference_height_m = reference_height_m;                    // ZLVL
-    surface_layer->displacement_height_m = zero_plane_displacement_m;          // ZPD
-    surface_layer->momentum_roughness_m = parameters->momentum_roughness_length_m;   // Z0M = Z0MVT
-    surface_layer->heat_roughness_m = parameters->momentum_roughness_length_m;       // Z0H = Z0M
-    surface_layer->wind_speed_m_per_s = wind_speed_m_per_s;
-    surface_layer->mpe = noahmp_minimum_positive_value;
-
-    // ---- RAGRB under canopy and leaf boundary layer
-    NoahmpRagrbInputs *ground_canopy = &input->ground_canopy;
-    ground_canopy->reference_wind_speed_m_per_s = wind_speed_m_per_s;
-    ground_canopy->reference_height_m = reference_height_m;
-    ground_canopy->momentum_roughness_m = parameters->momentum_roughness_length_m;
-    ground_canopy->displacement_height_m = zero_plane_displacement_m;
-    ground_canopy->canopy_height_m = HVT;                                         // HCAN = HVT
-    ground_canopy->vegetation_area_index = fmin(noahmp_maximum_effective_area_index, vegetation_area_index);  // VAIE
-    ground_canopy->air_density_kg_per_m3 = air_density_kg_per_m3;
-    ground_canopy->canopy_air_temperature_k = initial_canopy_air_temperature_k;
-    ground_canopy->ground_momentum_roughness_m = Z0MG;
-    ground_canopy->ground_heat_roughness_m = Z0MG;                                // Z0HG = Z0MG
-    ground_canopy->canopy_heat_roughness_m = parameters->momentum_roughness_length_m;   // Z0H = Z0M
-    ground_canopy->leaf_dimension_m = parameters->characteristic_leaf_dimension_m;     // DLEAF
-    ground_canopy->cwp = pet->bb_cwp;                                             // BMI variable CWP
-    ground_canopy->mpe = noahmp_minimum_positive_value;
-
+// The canopy input of this step (pet->bb_stability_input), for the nested solver: the preparation and
+// the canopy input physics (FLO 10/28; the same result as before). Returns 0 or -1.
+int bb6_build_canopy_input(pet_model *pet)
+{
+    BallBerryStepInputs step;
+    BallBerryStepResults results;
+    if (bb6_prepare_step_inputs(pet, &step) != 0) return -1;
+    bb6_canopy_input_physics(&pet->bb_parameters, &step, &pet->bb_stability_input, &results);
+    bb6_store_canopy_input_results(pet, &results);
+    if (results.no_canopy_this_step == 1) return 0;
+    bb6_set_nested_solver_controls(pet);
     pet->bb_stability_input_ready = 1;
     return 0;
 }

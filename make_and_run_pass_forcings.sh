@@ -28,7 +28,7 @@ catchment_longitude_degrees="-97.5554"
 catchment_site_elevation_m="303.33"
 catchment_num_timesteps="720"
 
-PET_SOURCES="${source_directory}/pet.c ${source_directory}/bmi_pet.c ${source_directory}/noahmp_stomata.c ${source_directory}/ball_berry_state.c ${source_directory}/ball_berry_helpers.c ${source_directory}/ball_berry_method6_inputs.c"
+PET_SOURCES="${source_directory}/pet.c ${source_directory}/bmi_pet.c ${source_directory}/noahmp_stomata.c ${source_directory}/ball_berry_state.c ${source_directory}/ball_berry_helpers.c ${source_directory}/ball_berry_canopy_physics.c ${source_directory}/ball_berry_struct_copies.c ${source_directory}/ball_berry_method6_inputs.c"
 AORC_SOURCES="${aorc_directory}/src/aorc.c ${aorc_directory}/src/bmi_aorc.c"
 
 if [ "${1:-}" = "-h" ]; then sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi

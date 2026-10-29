@@ -15,6 +15,8 @@ set(PET_SOURCES
     src/noahmp_stomata.c
     src/ball_berry_state.c
     src/ball_berry_helpers.c
+    src/ball_berry_canopy_physics.c
+    src/ball_berry_struct_copies.c
     src/ball_berry_method6_inputs.c
 )
 

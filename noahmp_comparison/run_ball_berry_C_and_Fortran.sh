@@ -204,6 +204,7 @@ echo "=== C: building with ${CC}"
 ${CC} -std=c99 -O2 -DBMI_ACTIVE -I"${c_include_directory}" \
     "${c_source_directory}/bmi_pet.c" "${c_source_directory}/pet.c" "${c_source_directory}/noahmp_stomata.c" \
     "${c_source_directory}/ball_berry_state.c" "${c_source_directory}/ball_berry_helpers.c" \
+    "${c_source_directory}/ball_berry_canopy_physics.c" "${c_source_directory}/ball_berry_struct_copies.c" \
     "${c_source_directory}/ball_berry_method6_inputs.c" "${c_driver_source_file}" \
     -lm -o "${c_build_directory}/test_ball_berry_method6" > "${c_build_directory}/build.log" 2>&1 \
     || stop_with_error "C build failed, see ${c_build_directory}/build.log"

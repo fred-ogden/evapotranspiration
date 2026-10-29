@@ -1,0 +1,8 @@
+function hypot:
+  intrinsic:
+  shape: (param 1, param 2, result)
+  type: (metavar float, metavar float, modifiedType(modifiers(ident double), float()))
+  derivative : binary(call(none(), ident hypot, expressions(metavar X, metavar Y)),
+       div(realCst 1.0, call(none(), ident hypot, expressions(metavar X, metavar Y))),
+       expressions(binary(metavar X, none(), metavar X),
+                   binary(metavar Y, none(), metavar Y)))

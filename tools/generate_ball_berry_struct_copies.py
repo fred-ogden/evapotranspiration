@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+# tools/generate_ball_berry_struct_copies.py - writes src/ball_berry_struct_copies.c and
+# include/ball_berry_struct_copies.h: a field-by-field copy and a zeroing function for every
+# structure of the Ball-Berry canopy physics (include/ball_berry_helpers.h, include/noahmp_stomata.h,
+# include/ball_berry_state.h, include/ball_berry_canopy_physics.h).
+#
+# Why: the canopy physics is differentiated by Tapenade 3.16, which does not handle whole-structure
+# assignment (a = b) or memset of structures that hold active values, so the physics copies and zeroes
+# them field by field.  The zeroing gives every double 0.0, every int 0, every pointer NULL: the values
+# memset(..., 0, ...) gave before.
+#
+# Rerun after a field is added to one of those headers, from the repository root:
+#     python3 tools/generate_ball_berry_struct_copies.py
+#
+# Author: Fred L. Ogden, Ph.D., P.E., NOAA/National Weather Service.  Apache-2.0.
+# FLO 10/28: first version.  ASCII only.
+import re, os, sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HEADERS = ['include/noahmp_stomata.h', 'include/ball_berry_helpers.h', 'include/ball_berry_state.h',
+           'include/ball_berry_canopy_physics.h']
+
+def strip_comments(text):
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+    return re.sub(r'//[^\n]*', '', text)
+
+structs = {}          # name -> list of (type, name, array_size or None, is_pointer)
+order = []
+enums = set()
+for header in HEADERS:
+    path = os.path.join(ROOT, header)
+    if not os.path.exists(path):
+        continue
+    src = strip_comments(open(path).read())
+    for m in re.finditer(r'typedef\s+enum\s*\{[^}]*\}\s*(\w+)\s*;', src):
+        enums.add(m.group(1))
+    for m in re.finditer(r'typedef\s+struct\s*\w*\s*\{([^{}]*)\}\s*(\w+)\s*;', src):
+        body, name = m.group(1), m.group(2)
+        fields = []
+        for declaration in body.split(';'):
+            declaration = ' '.join(declaration.split())
+            if not declaration:
+                continue
+            m2 = re.match(r'((?:const\s+)?\w+)\s+(.+)$', declaration)
+            field_type, names = m2.group(1), m2.group(2)
+            for item in names.split(','):
+                item = item.strip()
+                pointer = item.startswith('*')
+                item = item.lstrip('*').strip()
+                m3 = re.match(r'(\w+)\s*\[\s*(\w+)\s*\]$', item)
+                if m3:
+                    fields.append((field_type, m3.group(1), m3.group(2), pointer))
+                else:
+                    fields.append((field_type, item, None, pointer))
+        structs[name] = fields
+        order.append(name)
+
+def copy_function(name):
+    lines = []
+    uses_index = any(size is not None for _, _, size, _ in structs[name])
+    lines.append(f'void bb_copy_{name}(const {name} *source, {name} *destination)\n{{')
+    if uses_index:
+        lines.append('    int index;')
+    for field_type, field, size, pointer in structs[name]:
+        if size is not None:
+            if field_type in structs:
+                lines.append(f'    for (index = 0; index < {size}; ++index) bb_copy_{field_type}(&source->{field}[index], '
+                             f'&destination->{field}[index]);')
+            else:
+                lines.append(f'    for (index = 0; index < {size}; ++index) destination->{field}[index] = '
+                             f'source->{field}[index];')
+        elif field_type in structs and not pointer:
+            lines.append(f'    bb_copy_{field_type}(&source->{field}, &destination->{field});')
+        else:
+            lines.append(f'    destination->{field} = source->{field};')
+    lines.append('}\n')
+    return '\n'.join(lines)
+
+def zero_function(name):
+    lines = []
+    uses_index = any(size is not None for _, _, size, _ in structs[name])
+    lines.append(f'void bb_zero_{name}({name} *destination)\n{{')
+    if uses_index:
+        lines.append('    int index;')
+    for field_type, field, size, pointer in structs[name]:
+        if pointer:
+            value = 'NULL'
+        elif field_type in ('double', 'float'):
+            value = '0.0'
+        else:
+            value = '0'
+        if size is not None:
+            if field_type in structs:
+                lines.append(f'    for (index = 0; index < {size}; ++index) bb_zero_{field_type}(&destination->{field}[index]);')
+            else:
+                lines.append(f'    for (index = 0; index < {size}; ++index) destination->{field}[index] = {value};')
+        elif field_type in structs and not pointer:
+            lines.append(f'    bb_zero_{field_type}(&destination->{field});')
+        elif field_type in enums:
+            lines.append(f'    destination->{field} = ({field_type})0;')
+        else:
+            lines.append(f'    destination->{field} = {value};')
+    lines.append('}\n')
+    return '\n'.join(lines)
+
+banner = '''/*
+ * {file} - GENERATED by tools/generate_ball_berry_struct_copies.py; do not edit.
+ *
+ * A field-by-field copy (bb_copy_<type>) and zeroing (bb_zero_<type>) of every structure of the
+ * Ball-Berry canopy physics.  Tapenade 3.16 differentiates the canopy physics and does not handle
+ * whole-structure assignment or memset of structures holding active values.  Zeroing gives every
+ * double 0.0, every int 0 and every pointer NULL, as memset did.
+ *
+ * Author: Fred L. Ogden, Ph.D., P.E.
+ *         NOAA/National Weather Service
+ *
+ * This software was developed by a U.S. Government employee as part of
+ * official duties and is not subject to U.S. copyright protection under
+ * 17 U.S.C. Section 105.
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+'''
+header_lines = [banner.format(file='include/ball_berry_struct_copies.h'),
+                '#ifndef BALL_BERRY_STRUCT_COPIES_H', '#define BALL_BERRY_STRUCT_COPIES_H', '',
+                '#include "ball_berry_canopy_physics.h"', '']
+for name in order:
+    header_lines.append(f'void bb_copy_{name}(const {name} *source, {name} *destination);')
+    header_lines.append(f'void bb_zero_{name}({name} *destination);')
+header_lines += ['', '#endif /* BALL_BERRY_STRUCT_COPIES_H */', '']
+source_lines = [banner.format(file='src/ball_berry_struct_copies.c'), '#include <stddef.h>',
+                '#include "ball_berry_struct_copies.h"', '']
+for name in order:
+    source_lines.append(copy_function(name))
+    source_lines.append(zero_function(name))
+open(os.path.join(ROOT, 'include/ball_berry_struct_copies.h'), 'w').write('\n'.join(header_lines))
+open(os.path.join(ROOT, 'src/ball_berry_struct_copies.c'), 'w').write('\n'.join(source_lines))
+print('structures:', len(order))

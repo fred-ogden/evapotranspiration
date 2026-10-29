@@ -18,7 +18,7 @@ include_directory="${repository_root_directory}/include"
 configuration_directory="${repository_root_directory}/configs"
 executable="./run_pet_bmi_test"
 
-PET_SOURCES="${source_directory}/bmi_pet.c ${source_directory}/pet.c ${source_directory}/noahmp_stomata.c ${source_directory}/ball_berry_state.c ${source_directory}/ball_berry_helpers.c ${source_directory}/ball_berry_method6_inputs.c"
+PET_SOURCES="${source_directory}/bmi_pet.c ${source_directory}/pet.c ${source_directory}/noahmp_stomata.c ${source_directory}/ball_berry_state.c ${source_directory}/ball_berry_helpers.c ${source_directory}/ball_berry_canopy_physics.c ${source_directory}/ball_berry_struct_copies.c ${source_directory}/ball_berry_method6_inputs.c"
 
 if [ "${1:-}" = "-h" ]; then sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
 methods_to_run="${*:-1 2 3 4 5 6}"
