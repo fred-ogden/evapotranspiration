@@ -290,6 +290,30 @@ if ( $status != 0 ) then
     exit 1
 endif
 
+# ---- FLO 10/29: the derivative object for the dcfe-noahmp-stack's stack tangent (its
+# tapenade/stack_tangent/): every object of the test but the test's own, relinked into one, with only
+# the head, tangent and adjoint functions global.  Its copies of the production functions are then
+# local, so they never replace the production module's in the stack's executable.  The experiment
+# "objects" builds it and stops.
+if ( $have_tapenade ) then
+    set derivative_inputs = ""
+    foreach object ( $production_objects $objects )
+        if ( "$object:t" != "ball_berry_ad_test.o" ) set derivative_inputs = "$derivative_inputs $object"
+    end
+    ld -r -z muldefs -o $WORK_DIRECTORY/derivatives_with_global_symbols.o $derivative_inputs
+    if ( $status != 0 ) then
+        echo "ERROR: relinking the derivative object failed"
+        exit 1
+    endif
+    objcopy --keep-global-symbol=ball_berry_head --keep-global-symbol=ball_berry_tangent --keep-global-symbol=ball_berry_adjoint $WORK_DIRECTORY/derivatives_with_global_symbols.o $WORK_DIRECTORY/ball_berry_derivatives.o
+    if ( $status != 0 ) then
+        echo "ERROR: localizing the derivative object's symbols failed"
+        exit 1
+    endif
+    echo "derivative object (for the dcfe-noahmp-stack): $WORK_DIRECTORY/ball_berry_derivatives.o"
+endif
+if ( "$EXPERIMENTS" == "objects" ) exit 0
+
 echo ""
 echo "==== 6. running experiments $EXPERIMENTS"
 $test_program $CONFIGURATION $WORK_DIRECTORY/canopy_energy.csv $RESULTS_DIRECTORY $EXPERIMENTS |& \

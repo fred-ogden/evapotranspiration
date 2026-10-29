@@ -134,3 +134,14 @@ has 37 inputs; the ctests' outputs differ only in that count and in the BMI unit
 - a: reverse against tangent Jacobian 2.8e-12 at worst; dot products 5.2e-14 at worst.
 
 FLO 10/28: first version.
+
+## Derivative object for the dcfe-noahmp-stack (FLO 10/29)
+
+After its own link, the run script also relinks every object of the test except the test's own into one,
+`tapenade_work/canopy_energy/ball_berry_derivatives.o`, with only ball_berry_head, ball_berry_tangent and ball_berry_adjoint global (`ld -r`, then
+`objcopy --keep-global-symbol`). Its copies of the production functions are then local, so they never replace
+the production module's in an executable that links both: the dcfe-noahmp-stack's stack tangent
+(`tapenade/stack_tangent/` there) links the five modules' objects with the five production libraries. The
+experiment `objects` builds it and stops:
+
+    tapenade/canopy_energy/run_tapenade_ball_berry.csh objects
